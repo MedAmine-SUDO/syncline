@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 (2026-11-23)
 
 - Hooks: `hooks: {after_read, after_map}` run Python functions next to the flow; the engine checks that
   every row is kept and (after mapping) that columns and types are unchanged. `syncline validate` imports them.

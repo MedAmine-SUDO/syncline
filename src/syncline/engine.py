@@ -9,6 +9,7 @@ Every run ends with exactly one record in the run history, whatever happened:
 | `skipped`  | same file as the last successful run                            | untouched|
 | `rejected` | too many invalid rows (contract)                                | untouched|
 | `guarded`  | changes too large (mass-change guard)                           | untouched|
+| `partial`  | some writes refused by an API target (each one recorded)        | partly   |
 
 Problems with the flow file, the source, a hook or the target raise exceptions instead
 (SpecError, SourceError, MappingError, HookError, TargetError); nothing is written when they do.
@@ -16,6 +17,7 @@ Problems with the flow file, the source, a hook or the target raise exceptions i
 
 from __future__ import annotations
 
+import json
 import secrets
 import tempfile
 from dataclasses import dataclass, field
@@ -31,7 +33,7 @@ from syncline.io.read import ROW, ReadResult, read_file
 from syncline.mapping.apply import Mapped, apply_mapping
 from syncline.spec import FlowSpec, Guard, load_flow
 from syncline.state import RunRecord, State, now
-from syncline.targets.sql import SqlTable
+from syncline.targets.base import ApplyResult, open_target
 
 
 @dataclass
@@ -132,7 +134,7 @@ def run(
         base: dict[str, Any] = dict(
             id=run_id, flow=spec.flow, file=None, sha256=None, started_at=started,
             finished_at=now(), status=status, total=0, created=0, updated=0,
-            deactivated=0, unchanged=0, rejected=0, message=None,
+            deactivated=0, unchanged=0, rejected=0, failed=0, message=None,
             flow_path=str(flow_path.resolve()),
         )  # fmt: skip
         base.update(kw)
@@ -176,9 +178,10 @@ def run(
             return RunResult(record=rec, spec=spec, read=read, checked=e.checked, rejected=rejected)
 
         deactivate = spec.load.deactivate.set if spec.load.deactivate else None
-        table = SqlTable.open(
-            spec.load.target, spec.mapping, spec.load.key, extra=deactivate, create=not dry_run
-        )
+        table = open_target(
+            spec.load.target, spec.mapping, spec.load.key, extra=deactivate,
+            create=not dry_run, run_id=run_id,
+        )  # fmt: skip
         current = table.read(spec.load.key)
         policies = {f: m.update for f, m in spec.mapping.items()}
         diff = compute(
@@ -208,13 +211,47 @@ def run(
                 state.save(result.record, rejected, change_log(diff))
                 return result
 
+        log = change_log(diff)
+        status = "dry_run" if dry_run else "ok"
         if not dry_run:
-            table.apply(diff)
+            outcome = table.apply(diff)
+            if outcome.failed:
+                status = "partial"
+                log = applied_log(log, outcome)
+                totals["created"] -= outcome.failed_count("create")
+                totals["updated"] -= outcome.failed_count("update")
+                totals["deactivated"] -= outcome.failed_count("deactivate")
+                totals["failed"] = len(outcome.failed)
+                result.warnings.insert(0, partial_message(outcome))
 
         note = "; ".join(result.warnings) or None
-        result.record = record("dry_run" if dry_run else "ok", **where, **totals, message=note)
-        state.save(result.record, rejected, change_log(diff))
+        result.record = record(status, **where, **totals, message=note)
+        state.save(result.record, rejected, log)
         return result
+
+
+def applied_log(log: list[dict[str, Any]], outcome: ApplyResult) -> list[dict[str, Any]]:
+    """The change log of what was really applied, plus one `failed` entry per refused write."""
+    failed = {(f.action, json.dumps(f.key, default=str, sort_keys=True)) for f in outcome.failed}
+    kept = [
+        e for e in log
+        if (e["action"], json.dumps(e["key"], default=str, sort_keys=True)) not in failed
+    ]  # fmt: skip
+    return kept + [
+        {"action": "failed", "key": f.key,
+         "detail": {"action": f.action, "status": f.status, "error": f.error}}
+        for f in outcome.failed
+    ]  # fmt: skip
+
+
+def partial_message(outcome: ApplyResult) -> str:
+    refused = sum(1 for f in outcome.failed if f.status is not None)
+    not_sent = sum(1 for f in outcome.failed if f.error.startswith("not sent"))
+    parts = [f"{refused} write(s) refused by the target"] if refused else []
+    if outcome.stopped:
+        parts.append(f"stopped: {outcome.stopped}; {not_sent} not sent")
+    parts.append("the next run retries them (the diff is computed from the target again)")
+    return "; ".join(parts)
 
 
 class ReplayError(Exception):

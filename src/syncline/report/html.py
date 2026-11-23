@@ -25,6 +25,7 @@ STATUS_LABELS = {
     "skipped": "skipped",
     "rejected": "stopped: too many invalid rows",
     "guarded": "stopped: changes too large",
+    "partial": "partly applied: some writes were refused",
 }
 
 _env = Environment(autoescape=select_autoescape(default=True, default_for_string=True))
@@ -48,6 +49,7 @@ def _source_columns(rejected: list[dict[str, Any]]) -> list[str]:
 
 def _sections(changes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     spec = [
+        ("failed", "Writes the target refused", "what happened"),
         ("update", "Updated", "what changed"),
         ("create", "Created", "values"),
         ("deactivate", "Deactivated (no longer in the file)", "set"),
@@ -55,6 +57,8 @@ def _sections(changes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out = []
     for action, title, label in spec:
         rows = [c for c in changes if c["action"] == action]
+        if action == "failed" and not rows:
+            continue  # only API targets can refuse single writes
         out.append({
             "title": title, "detail_label": label, "total": len(rows),
             "rows": rows[:MAX_ROWS_PER_SECTION],

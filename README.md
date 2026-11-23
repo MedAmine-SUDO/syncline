@@ -73,8 +73,11 @@ Required fields, allowed values, unique keys and a maximum share of rejected row
 ### 🔍 Diff before write
 Incoming rows are compared with the target by business key. The result (create / update / deactivate / unchanged) drives the dry run, the load and the report.
 
+### 🔌 Into a database or an API
+Any SQLAlchemy database, or any JSON API: paginated reads, rate limiting, retries with backoff and `Retry-After`, idempotency keys, and a record the API refuses is reported without blocking the others.
+
 ### 🔁 Safe to re-run
-One transaction per run; a failure leaves the target untouched. The same file twice is skipped, and forcing it changes nothing. Updates write only the fields that changed, and per-field policies (`if_empty`, `never`) protect what people edit in the app.
+One transaction per run on databases; a failure leaves the target untouched. On APIs, runs converge: the next one sends only what is still different. The same file twice is skipped, and forcing it changes nothing. Updates write only the fields that changed, and per-field policies (`if_empty`, `never`) protect what people edit in the app.
 
 ### 🧾 Audit trail, reports and replay
 Every input file is kept by its hash, so any run can be replayed after a fix. Every change is stored with its old and new values. Any run's HTML report can be rebuilt later, even after the source file is gone. `--json` output for schedulers, documented exit codes.
@@ -105,6 +108,15 @@ uv run syncline runs                                                         # h
 ```
 
 Expected: day 1 creates 311 people and rejects 12 rows (each with a reason); day 2 creates 6, updates 2, deactivates 4 and leaves 305 unchanged.
+
+**Same file, into an API instead of a database** (a fake one, included):
+
+```bash
+uv run python ../fake_api/server.py &                     # http://127.0.0.1:8765
+export ACME_API_URL=http://127.0.0.1:8765 ACME_API_TOKEN=demo-token
+uv run syncline run acme_users_api.yaml -f employes_2026-11-01.csv
+uv run syncline run acme_users_api.yaml                   # day 2: the same 6 / 2 / 4
+```
 
 <br/>
 
@@ -175,7 +187,7 @@ See [docs/how-it-works.md](docs/how-it-works.md): why everything is read as text
 | `syncline report RUN_ID [-o FILE] [--json]` | Rebuild a run's report from the history |
 | `syncline schema` | JSON Schema for flow files |
 
-**Exit codes**: `0` done (including dry runs and skips) · `1` flow file, source file or mapping problem · `2` too many invalid rows, nothing loaded · `3` target problem · `4` stopped by the guard, nothing written.
+**Exit codes**: `0` done (including dry runs and skips) · `1` flow file, source file or mapping problem · `2` too many invalid rows, nothing loaded · `3` target problem · `4` stopped by the guard, nothing written · `5` an API target refused some writes (each one is in the report; the next run retries them).
 
 The run history is a small SQLite file (`~/.syncline/state.db`; change it with `--state` or `SYNCLINE_STATE`).
 Every input file is kept, read-only and stored by content hash, in `~/.syncline/archive` (`--archive` or `SYNCLINE_ARCHIVE`; `--no-archive` to skip), so `syncline replay` can re-run any past run on exactly the same bytes, for example after fixing a mapping.
@@ -189,7 +201,7 @@ Every input file is kept, read-only and stored by content hash, in `~/.syncline/
 | Processing | Polars (every column read as text, typed by the mapping) |
 | Sources | Local files, S3 (boto3; tested with moto), SFTP (paramiko; tested with an in-process server and OpenSSH) |
 | Config | Pydantic v2 models, unknown keys rejected, JSON Schema export |
-| Targets and history | SQLAlchemy 2 (SQLite and Postgres tested) |
+| Targets and history | SQLAlchemy 2 (SQLite and Postgres tested); any JSON API through httpx (tested against a fake API over real HTTP) |
 | CLI and output | Typer, Rich, Jinja2 (autoescaped HTML report) |
 | Quality | pytest + Hypothesis, 97% branch coverage, mypy strict, ruff, pre-commit, CI on Python 3.12 and 3.13 with Postgres and OpenSSH SFTP services, plus a clean-install job that runs the demo from the built wheel |
 
@@ -222,7 +234,7 @@ Things the tests didn't catch at first, found by running the demo end to end and
 
 - [x] Phase 1: files in, SQL out: mapping assistant, contracts, diff, guard, audit trail, reports
 - [x] S3 and SFTP sources
-- [ ] A generic REST API target (retries, rate limits, idempotent writes)
+- [x] A generic REST API target (pagination, retries, rate limits, idempotent writes, partial runs)
 - [x] Per-field update policies (`always`, `if_empty`, `never`); updates write only what changed
 - [ ] Lifecycle rules (allowed status transitions per entity)
 - [x] Hooks for customer-specific logic, without forking the engine

@@ -14,7 +14,8 @@ Every decision below follows from it.
 4. contract  required / allowed / unique; too many bad rows → stop
 5. diff      valid rows vs target rows, by business key
 6. guard     changes too large → stop
-7. load      one transaction (skipped by --dry-run)
+7. load      one transaction (database) or record by record with retries (API);
+             skipped by --dry-run
 8. record    run, rejected rows and change log saved to the run history
 ```
 
@@ -27,6 +28,7 @@ Every run ends with exactly one entry in the history:
 | `skipped` | same file as the last successful run | untouched |
 | `rejected` | too many invalid rows | untouched |
 | `guarded` | changes too large | untouched |
+| `partial` | an API target refused some writes; each is recorded | partly written |
 
 Problems that aren't about the data (a broken flow file, a missing source file, a missing column,
 an unreachable database) raise an error before anything is written.
@@ -112,6 +114,29 @@ because of a data-entry error would be the worst possible outcome. Keys of rejec
 
 This was a real bug, found while checking the day-2 demo run, and is now covered by a test.
 
+### An API has no transaction, so runs are made to converge
+
+A database applies the whole diff or nothing. An HTTP API applies one record at a time and can refuse any of
+them, so the REST target is built to be safe without a transaction:
+
+- **It reads before it writes.** Every page of the current records is listed first; only real differences
+  are sent. A run that stopped halfway is completed by the next one, which sees what the API holds by then:
+  the system converges instead of duplicating.
+- **Retries can't create duplicates.** 429 and temporary failures are retried with exponential backoff and
+  jitter, and `Retry-After` is honoured. A request that never left (connection refused) is always safe to
+  retry; one that may have been processed (timeout, lost reply) is retried only if it is idempotent:
+  `PATCH`/`PUT`, or a `POST` carrying an idempotency key that is stable across retries. Otherwise the run
+  stops and says so, rather than guessing.
+- **One bad record doesn't block the others.** A refused write is recorded with the API's own message; the
+  run is `partial` (exit code 5) and the report lists each one. The change log only contains what was
+  really applied.
+- **Systematic failure stops early.** Bad credentials, an API that stays down, or ten refusals in a row
+  stop sending: hundreds of identical errors help nobody, and the API's owners will thank you.
+- **Our own rate limit** keeps the API from having to defend itself.
+
+The fake API used by the tests (`examples/fake_api/server.py`, standard library only) speaks real HTTP and can
+inject 429s, 5xx, lost replies and refused records, so each of these paths is tested end to end.
+
 ### Deactivate, never delete
 
 Records leaving the file get the `deactivate.set` values (for example `status: inactive`). Nothing is
@@ -186,7 +211,9 @@ src/syncline/
   entities.py        built-in target fields and their synonyms
   contract.py        required / allowed / unique / max ratio
   diff.py            create / update / deactivate / unchanged
+  targets/base.py    what a target does (read, apply, report failures)
   targets/sql.py     table creation, reads, transactional writes
+  targets/rest.py    paginated reads, retried/rate-limited/idempotent writes
   engine.py          one run, stage by stage, the guard, and replay
   hooks.py           loading and calling hooks, and the rules they must follow
   state.py           run history, rejected rows, change log, in-place upgrades

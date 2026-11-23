@@ -39,6 +39,7 @@ EXIT_CONFIG = 1  # flow file, source file or mapping problem
 EXIT_CONTRACT = 2  # too many rejected rows: nothing loaded
 EXIT_TARGET = 3  # target unreachable or doesn't match
 EXIT_GUARD = 4  # changes too large: nothing written
+EXIT_PARTIAL = 5  # an API target refused some writes: the rest were applied
 
 StateOpt = Annotated[
     Path | None,
@@ -111,7 +112,7 @@ def _summary(res: RunResult, max_rejected: int = 10) -> None:
         return
 
     if res.diff is not None:
-        verb = "Would" if rec.status in ("dry_run", "guarded") else "Done:"
+        verb = {"dry_run": "Would", "guarded": "Would", "partial": "Sent:"}.get(rec.status, "Done:")
         c = res.diff.counts()
         out.print(
             f"[bold]{verb}[/] create [green]{c['create']}[/], update [cyan]{c['update']}[/], "
@@ -142,6 +143,8 @@ def _summary(res: RunResult, max_rejected: int = 10) -> None:
             f"[bold red]✗ run stopped by the mass-change guard, nothing written[/]: {rec.message}\n"
             "  If this is expected, run again with --allow-mass-change."
         )
+    elif rec.status == "partial":
+        err.print(f"[bold red]✗ {rec.failed} write(s) not applied[/] (see the report for each one)")
     elif rec.status == "dry_run":
         out.print("[yellow]Dry run: nothing written.[/]")
     out.print(f"[dim]run {rec.id}[/]")
@@ -255,6 +258,8 @@ def _finish(res: RunResult, store: State, report_dir: Path | None, as_json: bool
         raise typer.Exit(EXIT_CONTRACT)
     if res.status == "guarded":
         raise typer.Exit(EXIT_GUARD)
+    if res.status == "partial":
+        raise typer.Exit(EXIT_PARTIAL)
 
 
 @app.command()
@@ -291,6 +296,7 @@ def runs(
         t.add_column(col, justify="right" if col in "+~-=rejected" else "left")
     colors = {
         "ok": "green", "dry_run": "yellow", "skipped": "dim", "rejected": "red", "guarded": "red",
+        "partial": "red",
     }  # fmt: skip
     for r in State(state).history(flow, limit):
         t.add_row(

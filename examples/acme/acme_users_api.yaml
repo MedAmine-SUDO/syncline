@@ -1,0 +1,50 @@
+# The same Acme export, loaded into an application through its REST API instead of a database.
+# Try it with the fake API: python examples/fake_api/server.py, then
+#   export ACME_API_URL=http://127.0.0.1:8765 ACME_API_TOKEN=demo-token
+flow: acme_users_api
+entity: user
+source:
+  type: file
+  path: employes_*.csv
+mapping:
+  external_id: { from: Matricule, transform: [trim] }
+  first_name: { from: Prénom, transform: [trim, title] }
+  last_name: { from: Nom, transform: [trim, title] }
+  email: { from: E-mail, type: email, transform: [trim, lower] }
+  department:
+    from: Service
+    transform: [trim, lower]
+    values:
+      ventes: Sales
+      ingénierie: Engineering
+      rh: HR
+      finances: Finance
+      opérations: Operations
+      support: Support
+      marketing: Marketing
+    default: Unassigned
+  hire_date: { from: "Date d'entrée", type: date, format: "%d/%m/%Y" }
+  status: { default: active }
+contract:
+  required: [external_id, email, first_name, last_name]
+  unique: [external_id, email]
+  max_rejected_ratio: 0.05
+load:
+  target:
+    type: rest
+    base_url: env:ACME_API_URL
+    auth: { bearer: env:ACME_API_TOKEN }
+    list: /v1/people
+    items: data
+    pagination: { type: page, page_param: page, size_param: page_size, size: 100 }
+    create: { method: POST, path: /v1/people }
+    update: { method: PATCH, path: "/v1/people/{external_id}" }
+    fields: # our field name → the API's JSON name
+      external_id: externalId
+      first_name: firstName
+      last_name: lastName
+      hire_date: hireDate
+    max_requests_per_second: 50
+  key: [external_id]
+  mode: full_snapshot
+  deactivate: { set: { status: inactive } }

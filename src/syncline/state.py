@@ -31,13 +31,16 @@ runs = sa.Table(
     sa.Column("sha256", sa.String),
     sa.Column("started_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("finished_at", sa.DateTime(timezone=True)),
-    sa.Column("status", sa.String, nullable=False),  # ok | dry_run | skipped | rejected | error
+    sa.Column(
+        "status", sa.String, nullable=False
+    ),  # ok | dry_run | skipped | rejected | guarded | partial
     sa.Column("total", sa.Integer, default=0),
     sa.Column("created", sa.Integer, default=0),
     sa.Column("updated", sa.Integer, default=0),
     sa.Column("deactivated", sa.Integer, default=0),
     sa.Column("unchanged", sa.Integer, default=0),
     sa.Column("rejected", sa.Integer, default=0),
+    sa.Column("failed", sa.Integer, default=0),  # writes the target refused (API targets)
     sa.Column("message", sa.Text),
     sa.Column("flow_path", sa.String),  # the flow file used (for replay)
     sa.Column("archived", sa.String),  # where the input file was kept (for replay)
@@ -55,7 +58,7 @@ changes = sa.Table(
     _meta,
     sa.Column("run_id", sa.String, sa.ForeignKey("runs.id"), primary_key=True),
     sa.Column("seq", sa.Integer, primary_key=True),
-    sa.Column("action", sa.String, nullable=False),  # create | update | deactivate
+    sa.Column("action", sa.String, nullable=False),  # create | update | deactivate | failed
     sa.Column("record_key", sa.Text, nullable=False),  # JSON object: key field -> value
     sa.Column("detail", sa.Text, nullable=False),  # JSON: values, {field: [old, new]} or set
 )
@@ -79,6 +82,7 @@ class RunRecord:
     message: str | None
     flow_path: str | None = None
     archived: str | None = None
+    failed: int = 0
 
 
 def now() -> datetime:

@@ -50,6 +50,15 @@ _ENV_REF = r"^env:[A-Za-z_][A-Za-z0-9_]*$"
 EnvRef = Annotated[str, Field(pattern=_ENV_REF)]
 
 
+def _env_only(v: Any) -> Any:
+    if isinstance(v, str) and not v.startswith("env:"):
+        raise ValueError(
+            "secrets don't go in flow files: put it in an environment variable and "
+            "write env:VARIABLE_NAME, e.g. password: env:ACME_SFTP_PASSWORD"
+        )
+    return v
+
+
 def _remote_pattern(v: str) -> str:
     folder, _, name = v.rstrip().rpartition("/")
     if not name:
@@ -103,12 +112,7 @@ class SftpSource(ReadOptions):
     @field_validator("password", "key_passphrase", mode="before")
     @classmethod
     def _no_plain_secret(cls, v: Any) -> Any:
-        if isinstance(v, str) and not v.startswith("env:"):
-            raise ValueError(
-                "secrets don't go in flow files: put it in an environment variable and "
-                "write env:VARIABLE_NAME, e.g. password: env:ACME_SFTP_PASSWORD"
-            )
-        return v
+        return _env_only(v)
 
 
 Source = Annotated[FileSource | S3Source | SftpSource, Field(discriminator="type")]
@@ -154,6 +158,75 @@ class SqlTarget(_Strict):
     table: str
 
 
+_PLACEHOLDER = re.compile(r"{([^{}]*)}")
+
+
+class RestAuth(_Strict):
+    """How requests are authenticated. Secrets are env:VARIABLE references only."""
+
+    bearer: EnvRef | None = None  # Authorization: Bearer <token>
+    header: str | None = None  # a custom header, e.g. X-Api-Key ...
+    value: EnvRef | None = None  # ... and its value
+
+    @model_validator(mode="after")
+    def _one_style(self) -> RestAuth:
+        if self.bearer and (self.header or self.value):
+            raise ValueError("use either bearer, or header + value, not both")
+        if bool(self.header) != bool(self.value):
+            raise ValueError("header and value go together")
+        return self
+
+    @field_validator("bearer", "value", mode="before")
+    @classmethod
+    def _no_plain_secret(cls, v: Any) -> Any:
+        return _env_only(v)
+
+
+class Endpoint(_Strict):
+    method: Literal["POST", "PUT", "PATCH"]
+    path: str  # relative to base_url; {field} placeholders take the record's key values
+
+
+class Pagination(_Strict):
+    """How the list endpoint pages. `page`: page numbers; `cursor`: a token from each response."""
+
+    type: Literal["none", "page", "cursor"] = "none"
+    page_param: str = "page"
+    size_param: str = "page_size"
+    size: Annotated[int, Field(ge=1, le=10_000)] = 100
+    first_page: Annotated[int, Field(ge=0)] = 1
+    cursor_param: str = "cursor"
+    next_cursor: str = "next_cursor"  # where the next token is in the response (dotted path)
+
+
+class RestTarget(_Strict):
+    """A JSON HTTP API: the current records are listed, then created/updated one by one."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
+
+    type: Literal["rest"]
+    base_url: str  # https://... or env:VAR
+    auth: RestAuth = Field(default_factory=RestAuth)
+    list_path: str = Field(alias="list")  # GET path returning the current records
+    items: str = ""  # where the records are in the list response (dotted path); "" = the body
+    pagination: Pagination = Field(default_factory=Pagination)
+    create: Endpoint
+    update: Endpoint  # also used for deactivations
+    fields: dict[str, str] = Field(default_factory=dict)  # target field -> JSON name, if different
+    idempotency_header: str | None = "Idempotency-Key"  # sent with every write; null to turn off
+    max_requests_per_second: Annotated[float, Field(gt=0)] = 10
+    max_retries: Annotated[int, Field(ge=0, le=10)] = 5
+    timeout_seconds: Annotated[float, Field(gt=0)] = 30
+    stop_after_failures: Annotated[int, Field(ge=1)] = 10  # consecutive refused writes
+
+    def placeholders(self, endpoint: Endpoint) -> list[str]:
+        return _PLACEHOLDER.findall(endpoint.path)
+
+
+Target = Annotated[SqlTarget | RestTarget, Field(discriminator="type")]
+_TARGET_TYPES = ("sql", "rest")
+
+
 class Deactivate(_Strict):
     """Fields set on target rows whose key is missing from a full snapshot."""
 
@@ -180,11 +253,18 @@ class Guard(_Strict):
 
 
 class Load(_Strict):
-    target: SqlTarget
+    target: Target
     key: list[str] = Field(min_length=1)
     mode: Literal["full_snapshot", "incremental"] = "full_snapshot"
     deactivate: Deactivate | None = None
     guard: Guard = Field(default_factory=Guard)
+
+    @field_validator("target", mode="before")
+    @classmethod
+    def _default_type(cls, v: Any) -> Any:
+        if isinstance(v, dict) and "type" not in v:
+            return {"type": "sql", **v}
+        return v
 
     @model_validator(mode="after")
     def _check(self) -> Load:
@@ -266,6 +346,19 @@ class FlowSpec(_Strict):
                 f"key fields can't have an update policy (records are matched on them): "
                 f"{', '.join(policy_on_key)}"
             )
+        target = self.load.target
+        if isinstance(target, RestTarget):
+            for name, endpoint in (("create", target.create), ("update", target.update)):
+                bad = [p for p in target.placeholders(endpoint) if p not in self.load.key]
+                if bad:
+                    raise ValueError(
+                        f"load.target.{name}.path: {{{bad[0]}}} is not a key field "
+                        f"(only {', '.join(self.load.key)} can be used in paths)"
+                    )
+            if not target.placeholders(target.update):
+                raise ValueError(
+                    "load.target.update.path must name the record, e.g. /v1/users/{external_id}"
+                )
         optional_keys = [k for k in self.load.key if k not in self.contract.required]
         if optional_keys:
             raise ValueError(
@@ -305,12 +398,15 @@ def _describe(err: Any) -> str:
     parts = [str(p) for p in err["loc"]]
     if parts[:1] == ["source"] and len(parts) > 1 and parts[1] in _SOURCE_TYPES:
         del parts[1]  # pydantic adds the union tag: source.sftp.password → source.password
+    if parts[:2] == ["load", "target"] and len(parts) > 2 and parts[2] in _TARGET_TYPES:
+        del parts[2]
     loc = ".".join(parts)
     msg = str(err["msg"]).removeprefix("Value error, ")
     if err["type"] == "extra_forbidden":
         msg = "unknown key (typo?)"
     elif err["type"] == "union_tag_invalid":
-        msg = f"unknown type {err['input'].get('type')!r}; use one of: {', '.join(_SOURCE_TYPES)}"
+        types = _TARGET_TYPES if parts[:2] == ["load", "target"] else _SOURCE_TYPES
+        msg = f"unknown type {err['input'].get('type')!r}; use one of: {', '.join(types)}"
     return f"{loc}: {msg}" if loc else msg
 
 

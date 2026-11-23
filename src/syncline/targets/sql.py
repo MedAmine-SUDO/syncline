@@ -16,7 +16,8 @@ import sqlalchemy as sa
 
 from syncline.diff import CHANGED, Diff
 from syncline.io.read import ROW
-from syncline.spec import FieldMapping, FieldType, SqlTarget
+from syncline.spec import FieldMapping, FieldType, Scalar, SqlTarget
+from syncline.targets.base import ApplyResult
 
 _SA_TYPES: dict[FieldType, Any] = {
     "string": sa.Text,
@@ -62,7 +63,7 @@ class SqlTable:
         target: SqlTarget,
         mapping: dict[str, FieldMapping],
         key: list[str],
-        extra: dict[str, Any] | None = None,
+        extra: dict[str, Scalar] | None = None,
         create: bool = True,
     ) -> SqlTable:
         """Connect and find the table.
@@ -112,8 +113,8 @@ class SqlTable:
         df = pl.DataFrame([tuple(r) for r in rows], schema=self.schema, orient="row")
         return df.sort(key)
 
-    def apply(self, diff: Diff) -> None:
-        """Write the diff in one transaction."""
+    def apply(self, diff: Diff) -> ApplyResult:
+        """Write the diff in one transaction: everything is applied, or nothing (TargetError)."""
         if self.table is None:
             raise TargetError("the target table doesn't exist")
         key = diff.key
@@ -144,6 +145,7 @@ class SqlTable:
                 )
                 deact = diff.deactivate.select(pl.col(k).alias(f"_k_{k}") for k in key)
                 conn.execute(stmt, _records(deact))
+        return ApplyResult()
 
     def _writable(self, df: pl.DataFrame) -> list[str]:
         return [c for c in df.columns if c in self.schema]

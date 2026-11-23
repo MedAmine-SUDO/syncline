@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- REST target (`load.target.type: rest`, extra `syncline[rest]`): any JSON API. Paginated reads (page or
+  cursor), creates and updates one record at a time (`PATCH`/`POST` send only what changed, `PUT` keeps
+  fields Syncline doesn't manage), field renames, bearer or header auth from the environment.
+- Retries for 429 and temporary errors with exponential backoff, jitter and `Retry-After`; POSTs retried only
+  with an idempotency key (on by default); client-side rate limit.
+- New run status `partial` and exit code 5: writes an API refused are recorded one by one (change log action
+  `failed`, report section "Writes the target refused"); 401/403, an API still down after retries, or
+  `stop_after_failures` refusals in a row stop sending. The next run completes the rest.
+- `examples/fake_api/server.py` (standard library) and `examples/acme/acme_users_api.yaml`.
+- Run history: new `failed` column (older histories upgraded in place).
+
 - S3 source (`type: s3`, extra `syncline[s3]`): AWS or S3-compatible stores, standard AWS credential chain,
   last matching key by name, download size checked.
 - SFTP source (`type: sftp`, extra `syncline[sftp]`): password or key login, host keys checked against

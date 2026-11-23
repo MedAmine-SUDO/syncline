@@ -75,3 +75,14 @@ jobs:
           syncline run acme_users.yaml -f employes_2026-11-01.csv --state /tmp/s.db
           syncline run acme_users.yaml --state /tmp/s.db --report-dir /tmp/reports
           test -n "$(ls /tmp/reports/*.html)"
+      - name: Same demo into an API (the fake one), from the installed wheel
+        run: |
+          uv pip install --python /tmp/clean/bin/python "$(ls dist/*.whl)[rest]"
+          export PATH=/tmp/clean/bin:$PATH
+          python3 examples/fake_api/server.py --port 8765 &
+          sleep 1
+          cd examples/acme
+          export ACME_API_URL=http://127.0.0.1:8765 ACME_API_TOKEN=demo-token
+          syncline run acme_users_api.yaml -f employes_2026-11-01.csv --state /tmp/api.db
+          syncline run acme_users_api.yaml --state /tmp/api.db --json | tee /tmp/day2.json
+          python3 -c "import json; r = json.load(open('/tmp/day2.json')); assert (r['created'], r['updated'], r['deactivated']) == (6, 2, 4), r"

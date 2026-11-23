@@ -182,7 +182,7 @@ Every field named here must be in `mapping`. Key fields must be `required`.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `target` | required | `{type: sql, url: ..., table: ...}`. `url` is a [SQLAlchemy URL](https://docs.sqlalchemy.org/en/20/core/engines.html#database-urls), or `env:VAR` to read it from an environment variable (keep credentials out of flow files). |
+| `target` | required | A database (`type: sql`, the default) or a JSON API (`type: rest`); see below. |
 | `key` | required | The business key: one or more fields identifying a record (`[external_id]`). |
 | `mode` | `full_snapshot` | `full_snapshot`: the file is the complete list, so records missing from it are deactivated. `incremental`: the file only contains changes; missing records are left alone. |
 | `deactivate` | none | `full_snapshot` only, and required there: `{set: {status: inactive}}`. Records are never deleted. |
@@ -198,10 +198,60 @@ Every field named here must be in `mapping`. Key fields must be `required`.
 A stopped run writes nothing and exits with code 4. If the change is real, run again with
 `--allow-mass-change`. A dry run never stops; it warns that a real run would.
 
+### `target: {type: sql}`
+
+`{type: sql, url: ..., table: ...}`. `url` is a [SQLAlchemy URL](https://docs.sqlalchemy.org/en/20/core/engines.html#database-urls), or `env:VAR` to read it from an environment variable (keep credentials out of flow files).
+
 **Target table.** If it doesn't exist, it is created from the mapping (types mapped to SQL types, the key as
 primary key). If it exists, it must have every mapped column; other columns are left alone.
 A record that comes back after being deactivated is reactivated by the normal diff, as long as the flow
 sets the field back (for example `status: { default: active }`).
+
+### `target: {type: rest}`
+
+Any JSON HTTP API that can list its records and create or update one at a time (install `syncline[rest]`).
+Example: [`examples/acme/acme_users_api.yaml`](../examples/acme/acme_users_api.yaml), with a fake API to try it
+in [`examples/fake_api`](../examples/fake_api/server.py).
+
+```yaml
+load:
+  target:
+    type: rest
+    base_url: env:ACME_API_URL
+    auth: { bearer: env:ACME_API_TOKEN }       # or { header: X-Api-Key, value: env:ACME_API_KEY }
+    list: /v1/people                            # GET: the current records
+    items: data                                 # where the list is in the response
+    pagination: { type: page, size: 100 }
+    create: { method: POST, path: /v1/people }
+    update: { method: PATCH, path: "/v1/people/{external_id}" }   # deactivations use it too
+    fields: { external_id: externalId, first_name: firstName }    # our name → the API's
+  key: [external_id]
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `base_url` | required | `https://...`, or `env:VAR`. |
+| `auth` | none | `bearer: env:VAR` (Authorization: Bearer ...), or `header` + `value: env:VAR`. Secrets are `env:` references only. |
+| `list` | required | Path of the list endpoint (GET). |
+| `items` | the body | Dotted path to the list of records in the response (`data`, `result.items`). |
+| `pagination` | `{type: none}` | `page`: `page_param` (`page`), `size_param` (`page_size`), `size` (100), `first_page` (1); stops at a short page. `cursor`: `cursor_param` (`cursor`), `next_cursor` (dotted path, `next_cursor`); stops when it is empty. A page or cursor that repeats is an error, not an endless loop. |
+| `create` | required | `{method, path}` for new records. The body is every mapped field. |
+| `update` | required | `{method, path}`; the path names the record with key fields (`{external_id}`). `PATCH` or `POST`: the body has only the fields that changed (or the deactivation values). `PUT`: the record as the API returned it, with the changes applied, so fields Syncline doesn't manage are kept. |
+| `fields` | same names | Renames between mapping fields and the API's JSON names. |
+| `idempotency_header` | `Idempotency-Key` | Sent with every write, one value per run, action and record; makes retried POSTs safe on APIs that support it. `null` turns it off. |
+| `max_requests_per_second` | `10` | Our own rate limit. |
+| `max_retries` | `5` | For 429 and temporary errors (5xx, timeouts), with exponential backoff and jitter; `Retry-After` is honoured (up to 120 s). |
+| `timeout_seconds` | `30` | Per request. |
+| `stop_after_failures` | `10` | Stop sending after this many refused writes in a row: a systematic problem shouldn't be sent 300 times. |
+
+Values from the API are converted to the mapping's types (ISO dates, `"true"`/`"false"`); a value that
+doesn't fit, a record without a key or two records with the same key stop the run before anything is written.
+
+**When the API refuses some writes.** An API has no transaction. A record it refuses (400, 404, 409, 422...)
+is recorded with the API's message and the others continue; the run ends with status `partial` and exit code
+5, and the report lists every refused write. 401/403, an API still failing after the retries, or
+`stop_after_failures` refusals in a row stop sending; the writes that weren't sent are recorded too. The next
+run reads the API again and sends only what is still different, so nothing is lost or applied twice.
 
 ## `hooks`
 

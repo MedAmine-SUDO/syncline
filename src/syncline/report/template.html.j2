@@ -39,7 +39,7 @@
   <h1>{{ run.flow }} <span class="badge s-{{ run.status }}">{{ status_label }}</span></h1>
   <p class="meta">Run {{ run.id }} · {{ run.started_at.strftime("%Y-%m-%d %H:%M UTC") }}{% if file_name %} · file <b>{{ file_name }}</b>{% endif %}{% if run.sha256 %} · sha256 {{ run.sha256[:12] }}{% endif %}</p>
 
-  {% if run.message %}<div class="note{% if run.status in ('rejected', 'guarded') %} bad{% endif %}">{{ run.message }}</div>{% endif %}
+  {% if run.message %}<div class="note{% if run.status in ('rejected', 'guarded', 'partial') %} bad{% endif %}">{{ run.message }}</div>{% endif %}
 
   <div class="tiles">
     <div class="tile"><b>{{ run.total }}</b><span>rows in the file</span></div>
@@ -48,6 +48,7 @@
     <div class="tile"><b>{{ run.deactivated }}</b><span>{{ verb }}deactivated</span></div>
     <div class="tile"><b>{{ run.unchanged }}</b><span>unchanged</span></div>
     <div class="tile"><b>{{ run.rejected }}</b><span>rows not loaded</span></div>
+    {% if run.failed %}<div class="tile"><b>{{ run.failed }}</b><span>writes refused</span></div>{% endif %}
   </div>
 
   <h2>Rows we couldn't load ({{ rejected | length }})</h2>

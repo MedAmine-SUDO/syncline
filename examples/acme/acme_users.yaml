@@ -11,8 +11,15 @@ mapping:
   email: { from: E-mail, type: email, transform: [trim, lower] }
   department:
     from: Service
-    transform: [trim]
-    values: { Ventes: Sales, Ingénierie: Engineering, RH: HR, Finances: Finance }
+    transform: [trim, lower]  # the export mixes "FINANCES", "Finances" and "finances"
+    values:
+      ventes: Sales
+      ingénierie: Engineering
+      rh: HR
+      finances: Finance
+      opérations: Operations
+      support: Support
+      marketing: Marketing
     default: Unassigned
   hire_date: { from: "Date d'entrée", type: date, format: "%d/%m/%Y" }
   status: { default: active }  # constant: every row in the file is active

@@ -30,7 +30,7 @@ def test_example_flow_is_valid() -> None:
     spec = load_flow(EXAMPLE)
     assert spec.flow == "acme_users"
     assert spec.mapping["hire_date"].format == "%d/%m/%Y"
-    assert spec.mapping["department"].values["Ventes"] == "Sales"
+    assert spec.mapping["department"].values["ventes"] == "Sales"
     assert spec.load.deactivate is not None
     assert spec.load.deactivate.set == {"status": "inactive"}
 

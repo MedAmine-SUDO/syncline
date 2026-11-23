@@ -13,9 +13,12 @@ from rich.table import Table
 from syncline import __version__
 from syncline.engine import RunResult, preview_changes
 from syncline.engine import run as run_flow
-from syncline.io.read import SourceError
+from syncline.entities import ENTITIES, Entity, custom_entity
+from syncline.io.read import SourceError, read_file
 from syncline.mapping.apply import MappingError
-from syncline.spec import SpecError, json_schema, load_flow
+from syncline.mapping.draft import draft_flow
+from syncline.mapping.suggest import REVIEW, SAMPLE_ROWS, OfflineMatcher
+from syncline.spec import FileSource, SpecError, json_schema, load_flow
 from syncline.state import DEFAULT_STATE, State
 from syncline.targets.sql import TargetError
 
@@ -165,3 +168,81 @@ def runs(
             str(r.created), str(r.updated), str(r.deactivated), str(r.unchanged), str(r.rejected),
         )  # fmt: skip
     out.print(t)
+
+
+@app.command("map")
+def map_columns(
+    file: Annotated[Path, typer.Argument(help="A sample of the customer's file (CSV or Excel).")],
+    entity: Annotated[
+        str, typer.Option("--entity", "-e", help=f"Built-in entity: {', '.join(ENTITIES)}.")
+    ] = "user",
+    fields: Annotated[
+        str | None,
+        typer.Option("--fields", help="Custom target fields instead, comma-separated; key first."),
+    ] = None,
+    flow_name: Annotated[str | None, typer.Option("--flow", help="Name of the flow.")] = None,
+    output: Annotated[
+        Path | None, typer.Option("--output", "-o", help="Write the draft flow file here.")
+    ] = None,
+) -> None:
+    """Suggest a mapping for a file and write a draft flow file (offline, no AI)."""
+    if fields:
+        target: Entity = custom_entity(entity, [f.strip() for f in fields.split(",") if f.strip()])
+    elif entity in ENTITIES:
+        target = ENTITIES[entity]
+    else:
+        err.print(f"[bold red]✗[/] unknown entity {entity!r}; use one of {', '.join(ENTITIES)} "
+                  "or --fields")  # fmt: skip
+        raise typer.Exit(EXIT_CONFIG)
+    try:
+        read = read_file(file, FileSource(path=file.name))
+    except SourceError as e:
+        err.print(f"[bold red]✗[/] {e}")
+        raise typer.Exit(EXIT_CONFIG) from None
+
+    sample = read.df.drop("__row").head(SAMPLE_ROWS)
+    suggestions = OfflineMatcher().suggest(sample, target)
+
+    t = Table(header_style="dim", box=None, pad_edge=False)
+    for col in ("field", "column", "confidence", "why"):
+        t.add_column(col)
+    for s in suggestions:
+        if s.column is None:
+            t.add_row(s.field, "[red]—[/]", "", "[red]no matching column[/]")
+            continue
+        color = "green" if s.confidence >= REVIEW else "yellow"
+        why = s.reason + (f" · [yellow]{s.note}[/]" if s.note else "")
+        if s.date_format:
+            why += f" · format {s.date_format}"
+        t.add_row(s.field, s.column, f"[{color}]{s.confidence:.2f}[/]", why)
+    err.print(t)
+
+    rel = Path(file.name)
+    if output is not None:
+        try:
+            rel = file.resolve().relative_to(output.resolve().parent)
+        except ValueError:
+            rel = file.resolve()
+    text = draft_flow(
+        flow=flow_name or f"{target.name}s_from_{_slug(file.stem)}",
+        entity=target,
+        suggestions=suggestions,
+        sample=sample,
+        source_path=str(rel),
+    )
+    if output is None:
+        print(text, end="")
+    else:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(text, encoding="utf-8")
+        flagged = sum(1 for s in suggestions if s.needs_review)
+        err.print(f"[bold green]✓[/] wrote {output}" + (
+            f"  [yellow]({flagged} line(s) to review)[/]" if flagged else ""
+        ))  # fmt: skip
+
+
+def _slug(text: str) -> str:
+    import re
+
+    slug = re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
+    return slug if slug and slug[0].isalpha() else f"f_{slug}"

@@ -7,10 +7,10 @@ repos:
         language: system
         types: [python]
       - id: ruff-format
-        name: ruff format
+        name: ruff format (Python and code blocks in Markdown, same as CI)
         entry: uv run ruff format
         language: system
-        types: [python]
+        types_or: [python, markdown]
       - id: mypy
         name: mypy
         entry: uv run mypy

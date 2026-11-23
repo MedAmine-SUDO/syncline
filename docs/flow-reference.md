@@ -146,9 +146,10 @@ A hook is `path/to/file.py:function`, relative to the flow file:
 import polars as pl
 from syncline.hooks import HookContext
 
+
 def job_titles(df: pl.DataFrame, ctx: HookContext) -> pl.DataFrame:
     clean = pl.col("Poste").str.replace_all(r"\((e|ne)\)", "").str.strip_chars()
-    return df.with_columns(clean.alias("Poste (clean)"))   # then map job_title from it
+    return df.with_columns(clean.alias("Poste (clean)"))  # then map job_title from it
 ```
 
 `ctx` carries `flow`, `entity`, `file`, `run_id`, `dry_run` and `stage`.

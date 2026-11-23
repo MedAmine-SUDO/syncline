@@ -36,6 +36,10 @@ class TargetHandle(Protocol):
 
     def apply(self, diff: Diff) -> ApplyResult: ...
 
+    def columns(self, names: list[str]) -> pl.DataFrame:
+        """Any columns of the target (managed or not), as text: for lookups from other flows."""
+        ...
+
 
 def open_target(
     target: Target,

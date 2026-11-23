@@ -119,6 +119,32 @@ Source = Annotated[FileSource | S3Source | SftpSource, Field(discriminator="type
 _SOURCE_TYPES = ("file", "s3", "sftp")
 
 
+class Lookup(_Strict):
+    """Take this field's value from another flow's target, by matching the file's value.
+
+    ```yaml
+    user_id:
+      from: E-mail                                # what the file has
+      lookup:
+        flow: ../acme/acme_users.yaml             # the flow that loads users (relative path)
+        match: email                              # compared with the file's value
+        take: external_id                         # what this field gets (default: match)
+        where: { status: active }                 # only these records (optional)
+    ```
+    `match`, `take` and `where` name fields of that flow's mapping, or other columns of its
+    target (a table column, a JSON key such as the API's own `id`).
+    """
+
+    flow: str
+    match: str
+    take: str | None = None
+    where: dict[str, Scalar] = Field(default_factory=dict)
+
+    @property
+    def result(self) -> str:
+        return self.take or self.match
+
+
 class FieldMapping(_Strict):
     """How one target field is filled from the source file."""
 
@@ -133,6 +159,7 @@ class FieldMapping(_Strict):
     # When an existing record may be changed: always (default), if_empty (only fill a
     # blank value in the target), never (set on create only; the application owns it).
     update: UpdatePolicy = "always"
+    lookup: Lookup | None = None  # take the value from another flow's records
 
     @model_validator(mode="after")
     def _check(self) -> FieldMapping:
@@ -140,6 +167,8 @@ class FieldMapping(_Strict):
             raise ValueError("'format' only applies to fields of type 'date'")
         if self.source is None and self.default is None:
             raise ValueError("needs 'from' (a source column) or a 'default' value")
+        if self.lookup is not None and self.source is None:
+            raise ValueError("'lookup' needs 'from': the file column whose value is looked up")
         return self
 
 

@@ -114,6 +114,11 @@ def apply_mapping(df: pl.DataFrame, mapping: dict[str, FieldMapping]) -> Mapped:
     text_df = df.select(pl.col(ROW), *text_cols)
 
     for field, m in mapping.items():
+        if m.lookup is not None:
+            # The file's value is only used to find a record; the type applies to what the
+            # lookup takes (see syncline.lookups), so it stays text here.
+            typed_cols.append(pl.col(field))
+            continue
         value, bad, reason = _typed(pl.col(field), m)
         typed_cols.append(value.alias(field))
         if bad is not None:

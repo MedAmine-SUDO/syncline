@@ -100,9 +100,11 @@ def _issues(df: pl.DataFrame, contract: Contract) -> list[pl.DataFrame]:
 def check(mapped: Mapped, contract: Contract) -> Checked:
     """Split rows into loadable and rejected. Raises ContractFailure above the limit."""
     df = mapped.df
-    issues = pl.concat(
-        [mapped.errors.cast(ERROR_SCHEMA), *(f.cast(ERROR_SCHEMA) for f in _issues(df, contract))]  # type: ignore[arg-type]
-    )
+    errors = mapped.errors.cast(ERROR_SCHEMA)  # type: ignore[arg-type]
+    found = [f.cast(ERROR_SCHEMA) for f in _issues(df, contract)]  # type: ignore[arg-type]
+    # A cell that failed (bad date, failed lookup) is empty now; "missing" would say it twice.
+    found = [f.join(errors.select(ROW, "field"), on=[ROW, "field"], how="anti") for f in found]
+    issues = pl.concat([errors, *found])
     rejected = (
         issues.group_by(ROW, maintain_order=True)
         .agg(pl.col("reason").unique(maintain_order=True).alias("reasons"))

@@ -12,7 +12,8 @@ Every run ends with exactly one record in the run history, whatever happened:
 | `partial`  | some writes refused by an API target (each one recorded)        | partly   |
 
 Problems with the flow file, the source, a hook or the target raise exceptions instead
-(SpecError, SourceError, MappingError, HookError, TargetError); nothing is written when they do.
+(SpecError, SourceError, MappingError, HookError, LinkError, TargetError); nothing is written
+when they do.
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ from syncline.hooks import HookContext, Hooks, Stage
 from syncline.io.fetch import fetch
 from syncline.io.read import ROW, ReadResult, read_file
 from syncline.lifecycle import enforce
+from syncline.lookups import resolve
 from syncline.mapping.apply import Mapped, apply_mapping
 from syncline.spec import FlowSpec, Guard, load_flow
 from syncline.state import RunRecord, State, now
@@ -170,6 +172,7 @@ def run(
 
         text = hooks.run("after_read", read.df, ctx("after_read"))
         mapped = apply_mapping(text, spec.mapping)
+        mapped = resolve(mapped, spec, flow_path, run_id)
         after_map = hooks.run("after_map", mapped.df, ctx("after_map"))
         mapped = Mapped(df=after_map, errors=mapped.errors)
         try:

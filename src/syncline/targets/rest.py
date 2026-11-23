@@ -295,6 +295,21 @@ class RestApi:
             f"{self.spec.list_path}: more than {_MAX_PAGES} pages"
         )  # pragma: no cover
 
+    def columns(self, names: list[str]) -> pl.DataFrame:
+        """Fields by our names (renamed with `fields`), or any other JSON key of the records."""
+        from syncline.targets.sql import _text
+
+        rows = []
+        for item in self._list():
+            if not isinstance(item, dict):
+                raise TargetError(f"{self.spec.list_path} returned a non-object item: {item!r:.80}")
+            rows.append(
+                tuple(
+                    None if (v := item.get(self._json_name(n))) is None else _text(v) for n in names
+                )
+            )
+        return pl.DataFrame(rows, schema=dict.fromkeys(names, pl.String), orient="row")
+
     # --- write ------------------------------------------------------------------------
 
     def apply(self, diff: Diff) -> ApplyResult:

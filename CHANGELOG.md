@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Lookups (`lookup: {flow, match, take, where}` on a mapping field): take a value from another flow's target
+  (a field, a table column or an API JSON key), typed with the field's type. No match or several matches
+  reject the row with a reason. `syncline validate` checks the looked-up flows.
+- `syncline run-all FLOW...`: runs flows in dependency order (cycles refused); flows that look up a failed
+  flow are not run; exit code = highest of the runs.
+- Contract: a cell that already failed (bad date, failed lookup) no longer also reports "missing".
+- `examples/participants`: enrolments linked to the Acme users and trainings flows.
+
 ## 0.4.0 (2026-11-23)
 
 Lifecycle rules.

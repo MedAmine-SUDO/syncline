@@ -1,0 +1,45 @@
+# Training participants (fictional), exported by a learning platform that knows people by e-mail
+# and trainings by code. Both are looked up in the targets of the other two flows, so this flow
+# runs after them:  syncline run-all ../acme/acme_users.yaml ../trainings/trainings.yaml participants.yaml
+flow: participants
+entity: participant
+source:
+  type: file
+  path: inscriptions_*.csv
+mapping:
+  user_id:
+    from: E-mail
+    transform: [trim, lower]
+    lookup:
+      flow: ../acme/acme_users.yaml
+      match: email
+      take: external_id # the target stores the person's employee ID, not the e-mail
+      where: { status: active } # nobody is enrolled after leaving
+  training_code:
+    from: Formation
+    transform: [trim, upper]
+    lookup:
+      flow: ../trainings/trainings.yaml
+      match: code
+      where: { status: published } # drafts and archived trainings take no enrolments
+  status:
+    from: Statut
+    transform: [trim, lower]
+    values: { inscrit: enrolled, terminé: completed, annulé: cancelled }
+  enrolled_on: { from: Inscrit le, type: date, format: "%d/%m/%Y" }
+contract:
+  required: [user_id, training_code, status]
+  allowed: { status: [enrolled, completed, cancelled] }
+  max_rejected_ratio: 0.4 # a small demo file: four bad rows out of eleven
+lifecycle:
+  field: status
+  initial: [enrolled, completed]
+  transitions:
+    enrolled: [completed, cancelled]
+    completed: []
+    cancelled: [enrolled]
+load:
+  target: { type: sql, url: "env:APP_DB_URL", table: participants }
+  key: [user_id, training_code]
+  mode: full_snapshot
+  deactivate: { set: { status: cancelled } }

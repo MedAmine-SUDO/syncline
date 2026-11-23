@@ -9,8 +9,8 @@ Every decision below follows from it.
 1. read      fetch the file (folder, S3 or SFTP) → text table (encoding and delimiter
              detected, line numbers kept); the file is kept in the archive by its hash
 2. skip?     same bytes (sha256) as the last successful run → stop, nothing to do
-3. map       hook after_read → rename, transform, translate, default, type → hook after_map;
-             bad cells become reasons
+3. map       hook after_read → rename, transform, translate, default, type → lookups into
+             other flows' targets → hook after_map; bad cells become reasons
 4. contract  required / allowed / unique; too many bad rows → stop
 5. diff      valid rows vs target rows, by business key; lifecycle rules checked
              (forbidden status changes rejected, like contract failures)
@@ -138,6 +138,15 @@ them, so the REST target is built to be safe without a transaction:
 The fake API used by the tests (`examples/fake_api/server.py`, standard library only) speaks real HTTP and can
 inject 429s, 5xx, lost replies and refused records, so each of these paths is tested end to end.
 
+### Flows can look each other up, without becoming one big job
+
+Real data refers to other data: participants point at people and trainings. Instead of a flow that loads
+everything at once, each kind of record keeps its own flow, file, contract and history, and a field can take
+its value from another flow's **target**: the records as they really are after that flow's runs, not its input
+file. A value that matches nothing, or several records, rejects the row with a reason: guessing which
+"Blue team" was meant is how data quietly goes wrong. `syncline run-all` orders flows by their lookups and
+doesn't run a flow whose dependency failed, because its lookups would read incomplete data.
+
 ### Status changes follow a lifecycle
 
 A status is not just a value: some changes make no sense (an archived training published again, a draft
@@ -222,6 +231,7 @@ src/syncline/
   entities.py        built-in target fields and their synonyms
   contract.py        required / allowed / unique / max ratio
   lifecycle.py       allowed states and transitions, checked on the diff
+  lookups.py         values from other flows' targets, and the run order of several flows
   diff.py            create / update / deactivate / unchanged
   targets/base.py    what a target does (read, apply, report failures)
   targets/sql.py     table creation, reads, transactional writes

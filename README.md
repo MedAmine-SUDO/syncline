@@ -64,6 +64,9 @@ CSV or Excel, from a folder, an S3 bucket or an SFTP server (host keys checked, 
 ### 🪝 Hooks, not forks
 A customer needs something special? A Python function next to their flow (`after_read`, `after_map`). The engine checks what it returns: no lost rows, no changed types.
 
+### 🔗 Flows that refer to each other
+A field can take its value from another flow's records (`lookup`: an e-mail becomes an employee ID, a training code is checked against published trainings). No match, or several, rejects the row with a reason. `syncline run-all` runs flows in dependency order.
+
 ### ✅ Data contracts and lifecycles
 Required fields, allowed values, unique keys and a maximum share of rejected rows. Duplicates reject **every** copy: the engine won't guess which one is right. Status fields can follow a lifecycle (`draft → published → archived`): an impossible change is rejected with a reason, and a record is never forced into a state it can't reach.
 
@@ -116,6 +119,14 @@ cd ../trainings
 uv run syncline run trainings.yaml -f formations_2026-11-01.csv
 uv run syncline run trainings.yaml
 cd ../acme
+```
+
+**Flows that refer to each other**: `examples/participants` loads training enrolments from a file that knows people by e-mail and trainings by code. Lookups turn them into employee IDs and training codes from the other two flows' targets, rejecting leavers, unpublished trainings and unknown values with a reason. `run-all` runs the three flows in the right order:
+
+```bash
+cd ..
+uv run syncline run-all participants/participants.yaml trainings/trainings.yaml acme/acme_users.yaml
+cd acme
 ```
 
 **Same file, into an API instead of a database** (a fake one, included):
@@ -191,6 +202,7 @@ See [docs/how-it-works.md](docs/how-it-works.md): why everything is read as text
 | `syncline map FILE [-e user \| --fields a,b] [-o draft.yaml]` | Suggest a mapping and write a draft flow file |
 | `syncline validate FLOW` | Check a flow file without running it |
 | `syncline run FLOW [-f FILE] [--dry-run] [--force] [--allow-mass-change] [--report-dir DIR] [--json]` | Run a flow |
+| `syncline run-all FLOW... [--dry-run] [--report-dir DIR] [--json]` | Run several flows, each after the flows it looks up |
 | `syncline runs [--flow NAME]` | Recent runs |
 | `syncline replay RUN_ID [--flow FLOW] [--dry-run]` | Run a past run's kept input file again, through the flow's current configuration |
 | `syncline report RUN_ID [-o FILE] [--json]` | Rebuild a run's report from the history |
@@ -246,7 +258,7 @@ Things the tests didn't catch at first, found by running the demo end to end and
 - [x] A generic REST API target (pagination, retries, rate limits, idempotent writes, partial runs)
 - [x] Per-field update policies (`always`, `if_empty`, `never`); updates write only what changed
 - [x] Lifecycle rules (allowed states and transitions, deactivations included)
-- [ ] Links between flows (look-ups into another flow's records, run order)
+- [x] Links between flows (lookups into another flow's records, `run-all` in dependency order)
 - [x] Hooks for customer-specific logic, without forking the engine
 - [x] Raw-file archive and `syncline replay` (same bytes, current rules)
 - [ ] A scheduler and a small UI for many customers at once

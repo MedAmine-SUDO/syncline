@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Annotated, NoReturn
+from typing import Annotated, Any, NoReturn
 
 import typer
 from rich.console import Console
@@ -19,6 +19,7 @@ from syncline.engine import run as run_flow
 from syncline.entities import ENTITIES, Entity, custom_entity
 from syncline.hooks import HookError, Hooks
 from syncline.io.read import SourceError, read_file
+from syncline.lookups import LinkError, dependencies, load_linked, run_order
 from syncline.mapping.apply import MappingError
 from syncline.mapping.draft import draft_flow
 from syncline.mapping.suggest import REVIEW, SAMPLE_ROWS, OfflineMatcher
@@ -80,6 +81,8 @@ def validate(flow: Annotated[Path, typer.Argument(help="Flow file (.yaml)")]) ->
         Hooks.load(
             spec.hooks.configured(), flow.parent
         )  # hook files exist and their functions import
+        for path in dependencies(spec, flow).values():
+            load_linked(path, spec)  # looked-up flow files exist and are valid
     except Exception as e:
         _fail(e)
     out.print(
@@ -230,12 +233,109 @@ def replay(
     _finish(res, store, report_dir, as_json)
 
 
+_STATUS_EXIT = {"rejected": EXIT_CONTRACT, "guarded": EXIT_GUARD, "partial": EXIT_PARTIAL}
+
+
+@app.command("run-all")
+def run_all(
+    flows: Annotated[list[Path], typer.Argument(help="Flow files (.yaml), in any order.")],
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Show what would change; write nothing.")
+    ] = False,
+    allow_mass_change: Annotated[
+        bool,
+        typer.Option("--allow-mass-change", help="Apply even if the guard limits are exceeded."),
+    ] = False,
+    report_dir: Annotated[
+        Path | None, typer.Option("--report-dir", help="Write an HTML report per run here.")
+    ] = None,
+    as_json: Annotated[
+        bool, typer.Option("--json", help="Print a JSON list of run summaries instead.")
+    ] = False,
+    archive_dir: ArchiveOpt = None,
+    no_archive: Annotated[
+        bool, typer.Option("--no-archive", help="Don't keep copies of the input files.")
+    ] = False,
+    state: StateOpt = None,
+) -> None:
+    """Run several flows, each after the flows it looks up.
+
+    A flow that looks up a flow which didn't succeed is not run (its lookups would read
+    incomplete data). The exit code is the highest of the runs' exit codes.
+    """
+    try:
+        order = run_order(flows)
+    except Exception as e:
+        _fail(e)
+    if not as_json:
+        out.print("[dim]order[/]  " + " → ".join(p.name for p in order))
+        if dry_run:
+            out.print(
+                "[yellow]Dry run: lookups read the targets as they are now, not after the "
+                "previews of the flows before them.[/]"
+            )
+    store = State(state)
+    failed: dict[Path, str] = {}
+    summaries: list[dict[str, Any]] = []
+    worst = 0
+    for path in order:
+        if not as_json:
+            out.rule(f"[bold]{path.name}[/]", align="left")
+        blocked = _blocked_by(path, failed)
+        if blocked:
+            reason = f"not run: it looks up {blocked.name}, which {failed[blocked]}"
+            failed[path] = "was not run"
+            summaries.append({"flow_file": str(path), "status": "not_run", "message": reason})
+            if not as_json:
+                err.print(f"[bold red]✗ {reason}[/]")
+            continue
+        try:
+            res = run_flow(
+                path, dry_run=dry_run, allow_mass_change=allow_mass_change, state=store,
+                archive=None if no_archive else Archive(archive_dir),
+            )  # fmt: skip
+        except Exception as e:
+            code = EXIT_CONFIG
+            try:
+                _fail(e)
+            except typer.Exit as stop:
+                code = stop.exit_code
+            failed[path] = "failed"
+            summaries.append({"flow_file": str(path), "status": "error", "exit_code": code})
+            worst = max(worst, code)
+            continue
+        report = write_report(store, res.record.id, report_dir) if report_dir else None
+        code = _STATUS_EXIT.get(res.status, 0)
+        if code:
+            failed[path] = f"ended {res.status}"
+        worst = max(worst, code)
+        summaries.append({**res.record.__dict__, "warnings": res.warnings, "report": report})
+        if not as_json:
+            _summary(res)
+            if report:
+                out.print(f"[dim]report[/] {report}")
+    if as_json:
+        print(json.dumps(summaries, default=str, ensure_ascii=False))
+    if worst:
+        raise typer.Exit(worst)
+
+
+def _blocked_by(path: Path, failed: dict[Path, str]) -> Path | None:
+    try:
+        spec = load_flow(path)
+    except SpecError:
+        return None  # the run reports it
+    return next((d for d in dependencies(spec, path).values() if d in failed), None)
+
+
 def _fail(e: Exception) -> NoReturn:
     """Print a known error and exit with its code; re-raise anything unexpected."""
     if isinstance(e, SpecError):
         _print_spec_error(e)
         raise typer.Exit(EXIT_CONFIG) from None
-    if isinstance(e, SourceError | MappingError | ArchiveError | ReplayError | HookError):
+    if isinstance(
+        e, SourceError | MappingError | ArchiveError | ReplayError | HookError | LinkError
+    ):
         err.print(f"[bold red]✗[/] {e}")
         raise typer.Exit(EXIT_CONFIG) from None
     if isinstance(e, TargetError):

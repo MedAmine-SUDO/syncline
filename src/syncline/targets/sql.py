@@ -113,6 +113,18 @@ class SqlTable:
         df = pl.DataFrame([tuple(r) for r in rows], schema=self.schema, orient="row")
         return df.sort(key)
 
+    def columns(self, names: list[str]) -> pl.DataFrame:
+        schema = dict.fromkeys(names, pl.String)
+        if self.table is None:
+            return pl.DataFrame(schema=schema)
+        missing = [n for n in names if n not in self.table.c]
+        if missing:
+            raise TargetError(f"table {self.table.name} has no column(s): {', '.join(missing)}")
+        with self.engine.connect() as conn:
+            rows = conn.execute(sa.select(*(self.table.c[n] for n in names))).all()
+        values = [tuple(None if v is None else _text(v) for v in r) for r in rows]
+        return pl.DataFrame(values, schema=schema, orient="row")
+
     def apply(self, diff: Diff) -> ApplyResult:
         """Write the diff in one transaction: everything is applied, or nothing (TargetError)."""
         if self.table is None:
@@ -158,6 +170,15 @@ def _by_changed_fields(update: pl.DataFrame) -> list[tuple[list[str], pl.DataFra
         "_set", maintain_order=True
     )
     return [(g["_set"][0].to_list(), g.drop("_set")) for g in groups]
+
+
+def _text(value: Any) -> str:
+    """Values as text the same way whatever the database: dates in ISO, booleans true/false."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if hasattr(value, "isoformat"):
+        return str(value.isoformat())
+    return str(value)
 
 
 def _records(df: pl.DataFrame) -> list[dict[str, Any]]:

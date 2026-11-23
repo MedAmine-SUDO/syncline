@@ -19,8 +19,8 @@ lifecycle: { ... }          # optional
 ```
 
 A flow isn't tied to people: any records with a key can be synced (see `examples/trainings` for a training
-catalogue). Each flow is one file into one table or endpoint; links between flows (looking up another
-flow's records, running one before another) are not supported yet.
+catalogue). Each flow is one file into one table or endpoint; a field can take its value from another flow's
+records with a [`lookup`](#lookups-links-between-flows), and `syncline run-all` runs flows in the right order.
 
 ## `flow`
 
@@ -142,6 +142,7 @@ mapping:
 | `transform` | `[]` | Applied in order: `trim`, `lower`, `upper`, `title`, `collapse_spaces`, `digits_only`. |
 | `values` | `{}` | Value map, applied after the transforms: `{old: new}`. Values not listed are kept. |
 | `default` | none | Used when the cell is empty, or always when there is no `from`. |
+| `lookup` | none | Take the value from another flow's records; see [Lookups](#lookups-links-between-flows). |
 | `update` | `always` | When an **existing** record's field may change: `always` (any difference), `if_empty` (only fill a value that is empty in the target), `never` (set on create only; the application owns it afterwards). Not allowed on key fields. |
 
 ```yaml
@@ -329,4 +330,44 @@ lifecycle:
   the run says which records and why.
 
 See `examples/trainings/trainings.yaml`.
+
+## Lookups: links between flows
+
+A file often refers to records that another flow loads: a participants export names people by e-mail and
+trainings by code, while the target wants the person's employee ID. A `lookup` finds the record in the target
+of that other flow and takes a value from it:
+
+```yaml
+mapping:
+  user_id:
+    from: E-mail
+    transform: [trim, lower]
+    lookup:
+      flow: ../acme/acme_users.yaml   # the flow that loads people (relative to this file)
+      match: email                    # compared with the file's value (after transforms and values)
+      take: external_id               # what this field gets; default: the matched value itself
+      where: { status: active }       # only these records; optional
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `flow` | required | The other flow file. Its target is read (not run), once per run. |
+| `match` | required | A field of that flow, or any other column of its target: a table column, or a JSON key such as the API's own `id`. |
+| `take` | `match` | The value to put in this field, typed with this field's `type` (an API id as `int`, for example). |
+| `where` | `{}` | Only consider records with these values (compared as text, ignoring case). |
+
+- A value that matches **no** record, or **more than one**, is a bad cell: the row is rejected with the reason
+  (`no acme_users record with email 'x' among status 'active'`, `2 teams records have name 'Blue'`), like a
+  bad date, and counts towards `max_rejected_ratio`. An empty cell stays empty (use `contract.required`).
+- A flow can't look up its own records (the records of the current run wouldn't be found yet).
+- `syncline validate` checks that the looked-up flow files exist and are valid.
+
+**Run order.** `syncline run-all FLOW...` runs the given flows so that each one runs after the flows it looks
+up, whatever the order on the command line, and refuses cycles. If a flow doesn't succeed (rejected,
+guarded, partial or an error), the flows that look it up are not run, since their lookups would read
+incomplete data; the exit code is the highest of the runs'. In `--dry-run`, lookups read the targets as they
+are, not as the earlier previews would leave them. Run separately, a lookup simply reads what the other
+target holds at that moment, and a record created later is found by the next run.
+
+See `examples/participants/participants.yaml`.
 

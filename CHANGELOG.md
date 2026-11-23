@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Lifecycle rules (`lifecycle: {field, initial, transitions}`): new records must start in an initial state,
+  updates must follow an allowed transition, unknown or emptied states are refused. Refused rows are rejected
+  as a whole with a reason and count towards `max_rejected_ratio`. Deactivations follow the rules: records
+  that can't move to the deactivation state are left alone and reported.
+- `examples/trainings`: a training catalogue flow (not people) with a lifecycle.
+
 ## 0.3.0 (2026-11-23)
 
 Sources and targets beyond files and databases.

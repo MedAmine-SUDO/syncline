@@ -152,6 +152,48 @@ class Contract(_Strict):
     max_rejected_ratio: Annotated[float, Field(ge=0, le=1)] = 0.05
 
 
+class Lifecycle(_Strict):
+    """Which values a status-like field may take, and which changes between them are allowed.
+
+    ```yaml
+    lifecycle:
+      field: status
+      initial: [pending, active]          # what a new record may start as
+      transitions:
+        pending: [active, cancelled]
+        active: [suspended, inactive]
+        suspended: [active, inactive]
+        inactive: [active]                 # someone who comes back
+    ```
+    A row asking for a change that isn't listed is rejected with a reason; nothing of it is
+    written. Every state must appear as a key of `transitions` (with `[]` for a final state).
+    """
+
+    field: str
+    initial: list[Scalar] | None = None  # None: a new record may start in any state
+    transitions: dict[str, list[Scalar]] = Field(min_length=1)
+
+    def states(self) -> list[str]:
+        return list(self.transitions)
+
+    def allowed_from(self, state: str) -> list[str]:
+        return [str(s) for s in self.transitions.get(state, [])]
+
+    @model_validator(mode="after")
+    def _known_states(self) -> Lifecycle:
+        states = set(self.transitions)
+        unknown = sorted(
+            {str(t) for targets in self.transitions.values() for t in targets} - states
+            | {str(i) for i in self.initial or []} - states
+        )
+        if unknown:
+            raise ValueError(
+                f"unknown state(s) {', '.join(unknown)}: every state needs its own entry in "
+                "transitions (use [] for a final state)"
+            )
+        return self
+
+
 class SqlTarget(_Strict):
     type: Literal["sql"] = "sql"
     url: str  # SQLAlchemy URL, or "env:VAR_NAME" to read it from the environment
@@ -301,6 +343,7 @@ class FlowSpec(_Strict):
     contract: Contract = Field(default_factory=Contract)
     load: Load
     hooks: HookRefs = Field(default_factory=HookRefs)
+    lifecycle: Lifecycle | None = None
 
     @field_validator("flow")
     @classmethod
@@ -346,6 +389,18 @@ class FlowSpec(_Strict):
                 f"key fields can't have an update policy (records are matched on them): "
                 f"{', '.join(policy_on_key)}"
             )
+        if self.lifecycle:
+            lc = self.lifecycle
+            if lc.field not in fields:
+                raise ValueError(f"lifecycle.field: {lc.field} not in mapping")
+            if lc.field in self.load.key:
+                raise ValueError("lifecycle.field can't be a key field")
+            deactivate = self.load.deactivate.set if self.load.deactivate else {}
+            if lc.field in deactivate and str(deactivate[lc.field]) not in lc.states():
+                raise ValueError(
+                    f"load.deactivate.set.{lc.field}: {deactivate[lc.field]!r} is not a "
+                    f"lifecycle state ({', '.join(lc.states())})"
+                )
         target = self.load.target
         if isinstance(target, RestTarget):
             for name, endpoint in (("create", target.create), ("update", target.update)):

@@ -24,12 +24,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import polars as pl
+
 from syncline.archive import Archive
 from syncline.contract import Checked, ContractFailure, check
 from syncline.diff import CHANGED, Diff, compute
 from syncline.hooks import HookContext, Hooks, Stage
 from syncline.io.fetch import fetch
 from syncline.io.read import ROW, ReadResult, read_file
+from syncline.lifecycle import enforce
 from syncline.mapping.apply import Mapped, apply_mapping
 from syncline.spec import FlowSpec, Guard, load_flow
 from syncline.state import RunRecord, State, now
@@ -187,6 +190,30 @@ def run(
         diff = compute(
             checked.valid, current, spec.load.key, deactivate, present=mapped.df, policies=policies
         )
+        if spec.lifecycle:
+            enforced = enforce(diff, current, spec.lifecycle)
+            diff = enforced.diff
+            result_warnings = enforced.warnings
+            if not enforced.rejected.is_empty():
+                checked = Checked(
+                    valid=checked.valid.join(enforced.rejected.select(ROW), on=ROW, how="anti"),
+                    rejected=pl.concat(
+                        [checked.rejected, enforced.rejected.cast(checked.rejected.schema)]
+                    ).sort(ROW),
+                    total=checked.total,
+                )
+                if checked.rejected_ratio > spec.contract.max_rejected_ratio:
+                    failure = ContractFailure(checked, spec.contract.max_rejected_ratio)
+                    rejected = rejected_details(read, checked)
+                    rec = record(
+                        "rejected", **where, rejected=checked.rejected.height, message=str(failure)
+                    )
+                    state.save(rec, rejected)
+                    return RunResult(
+                        record=rec, spec=spec, read=read, checked=checked, rejected=rejected
+                    )
+        else:
+            result_warnings = []
         rejected = rejected_details(read, checked)
         counts = diff.counts()
         totals = dict(
@@ -198,7 +225,7 @@ def run(
         )
         result = RunResult(
             record=record("pending"), spec=spec, read=read, checked=checked, diff=diff,
-            rejected=rejected,
+            rejected=rejected, warnings=list(result_warnings),
         )  # fmt: skip
 
         violations = guard_violations(diff, current.height, spec.load.guard)

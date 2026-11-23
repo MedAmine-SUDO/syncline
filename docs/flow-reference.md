@@ -9,13 +9,18 @@ what a valid row is, and how rows are loaded. It is YAML, validated before anyth
 
 ```yaml
 flow: acme_users            # required
-entity: user                # required: a label for what is synced
+entity: user                # required: a label for what is synced (user, training, product...)
 source: { ... }             # required
 mapping: { ... }            # required, at least one field
 contract: { ... }           # optional (defaults below)
 load: { ... }               # required
 hooks: { ... }              # optional
+lifecycle: { ... }          # optional
 ```
+
+A flow isn't tied to people: any records with a key can be synced (see `examples/trainings` for a training
+catalogue). Each flow is one file into one table or endpoint; links between flows (looking up another
+flow's records, running one before another) are not supported yet.
 
 ## `flow`
 
@@ -290,3 +295,38 @@ the message. `syncline validate` imports the hook files, so a missing file or fu
 
 Hooks run as normal Python with your permissions, like any plugin: only use flow files and hook files you trust.
 See `examples/acme/acme_users_with_hooks.yaml`.
+
+## `lifecycle`
+
+Which values a status-like field may take, and which changes between them are allowed. Checked against the
+target, because a transition needs both the current value and the new one.
+
+```yaml
+lifecycle:
+  field: status
+  initial: [draft, published]       # what a new record may start as (default: any state)
+  transitions:
+    draft: [published, cancelled]
+    published: [archived, cancelled]
+    archived: []                     # final state
+    cancelled: []
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `field` | required | A mapped field, not a key field. |
+| `initial` | any state | States a **new** record may have. |
+| `transitions` | required | For each state, the states it may move to. Every state needs an entry (`[]` for a final one); an unknown state is a validation error. |
+
+- A row asking for a change that isn't listed (`published` → `draft`), an unknown state, or an emptied status is
+  **rejected as a whole**, with a reason and its line number, in the same list as contract rejections: none
+  of its other changes are written, since a row with an impossible status is probably wrong as a whole.
+  These rejections count towards `max_rejected_ratio`.
+- A record whose current value in the target isn't a known state is rejected too ("fix it there first").
+  A record with no value yet is treated like a new one.
+- **Deactivations follow the rules.** `deactivate.set` must use a known state, and a record the lifecycle
+  doesn't allow to move there from its current state (a `draft` can't become `archived`) is left alone;
+  the run says which records and why.
+
+See `examples/trainings/trainings.yaml`.
+

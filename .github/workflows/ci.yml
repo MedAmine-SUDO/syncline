@@ -75,6 +75,9 @@ jobs:
           syncline run acme_users.yaml -f employes_2026-11-01.csv --state /tmp/s.db
           syncline run acme_users.yaml --state /tmp/s.db --report-dir /tmp/reports
           test -n "$(ls /tmp/reports/*.html)"
+          cd ../trainings
+          syncline run trainings.yaml -f formations_2026-11-01.csv --state /tmp/s.db
+          syncline run trainings.yaml --state /tmp/s.db
       - name: Same demo into an API (the fake one), from the installed wheel
         run: |
           uv pip install --python /tmp/clean/bin/python "$(ls dist/*.whl)[rest]"

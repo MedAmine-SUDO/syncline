@@ -64,8 +64,8 @@ CSV or Excel, from a folder, an S3 bucket or an SFTP server (host keys checked, 
 ### 🪝 Hooks, not forks
 A customer needs something special? A Python function next to their flow (`after_read`, `after_map`). The engine checks what it returns: no lost rows, no changed types.
 
-### ✅ Data contracts
-Required fields, allowed values, unique keys and a maximum share of rejected rows. Duplicates reject **every** copy: the engine won't guess which one is right.
+### ✅ Data contracts and lifecycles
+Required fields, allowed values, unique keys and a maximum share of rejected rows. Duplicates reject **every** copy: the engine won't guess which one is right. Status fields can follow a lifecycle (`draft → published → archived`): an impossible change is rejected with a reason, and a record is never forced into a state it can't reach.
 
 </td>
 <td width="50%" valign="top">
@@ -108,6 +108,15 @@ uv run syncline runs                                                         # h
 ```
 
 Expected: day 1 creates 311 people and rejects 12 rows (each with a reason); day 2 creates 6, updates 2, deactivates 4 and leaves 305 unchanged.
+
+**Not only people**: `examples/trainings` syncs a training catalogue with a lifecycle (`draft → published → archived`). Day 2 sends a published training back to draft and creates one directly as archived: both rows are refused with a reason, and a draft that disappeared from the file is left alone instead of being archived.
+
+```bash
+cd ../trainings
+uv run syncline run trainings.yaml -f formations_2026-11-01.csv
+uv run syncline run trainings.yaml
+cd ../acme
+```
 
 **Same file, into an API instead of a database** (a fake one, included):
 
@@ -236,7 +245,8 @@ Things the tests didn't catch at first, found by running the demo end to end and
 - [x] S3 and SFTP sources
 - [x] A generic REST API target (pagination, retries, rate limits, idempotent writes, partial runs)
 - [x] Per-field update policies (`always`, `if_empty`, `never`); updates write only what changed
-- [ ] Lifecycle rules (allowed status transitions per entity)
+- [x] Lifecycle rules (allowed states and transitions, deactivations included)
+- [ ] Links between flows (look-ups into another flow's records, run order)
 - [x] Hooks for customer-specific logic, without forking the engine
 - [x] Raw-file archive and `syncline replay` (same bytes, current rules)
 - [ ] A scheduler and a small UI for many customers at once

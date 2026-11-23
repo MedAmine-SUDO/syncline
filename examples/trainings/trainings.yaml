@@ -1,0 +1,37 @@
+# A training catalogue (fictional), to show that a flow isn't tied to people: any records with a key.
+# Day 2 sends a published training back to draft and creates a new one as archived:
+# both are refused by the lifecycle, with a reason. A draft that disappears is not archived
+# either (draft → archived isn't allowed), and the run says so.
+flow: trainings
+entity: training
+source:
+  type: file
+  path: formations_*.csv
+mapping:
+  code: { from: Code, transform: [trim, upper] }
+  title: { from: Intitulé, transform: [trim] }
+  category: { from: Catégorie, transform: [trim] }
+  hours: { from: Durée (h), type: int }
+  status:
+    from: Statut
+    transform: [trim, lower]
+    values: { brouillon: draft, publiée: published, archivée: archived, annulée: cancelled }
+  starts_on: { from: Date de début, type: date, format: "%Y-%m-%d" }
+contract:
+  required: [code, title, status]
+  unique: [code]
+  allowed: { status: [draft, published, archived, cancelled] }
+  max_rejected_ratio: 0.3 # a small catalogue: a few refused rows are a large share
+lifecycle:
+  field: status
+  initial: [draft, published]
+  transitions:
+    draft: [published, cancelled]
+    published: [archived, cancelled]
+    archived: [] # final: an archived training is never reopened (create a new one)
+    cancelled: []
+load:
+  target: { type: sql, url: "env:APP_DB_URL", table: trainings }
+  key: [code]
+  mode: full_snapshot
+  deactivate: { set: { status: archived } }

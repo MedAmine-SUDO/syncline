@@ -12,7 +12,8 @@ Every decision below follows from it.
 3. map       hook after_read → rename, transform, translate, default, type → hook after_map;
              bad cells become reasons
 4. contract  required / allowed / unique; too many bad rows → stop
-5. diff      valid rows vs target rows, by business key
+5. diff      valid rows vs target rows, by business key; lifecycle rules checked
+             (forbidden status changes rejected, like contract failures)
 6. guard     changes too large → stop
 7. load      one transaction (database) or record by record with retries (API);
              skipped by --dry-run
@@ -137,6 +138,16 @@ them, so the REST target is built to be safe without a transaction:
 The fake API used by the tests (`examples/fake_api/server.py`, standard library only) speaks real HTTP and can
 inject 429s, 5xx, lost replies and refused records, so each of these paths is tested end to end.
 
+### Status changes follow a lifecycle
+
+A status is not just a value: some changes make no sense (an archived training published again, a draft
+course marked as completed), and a file asking for one is usually wrong. The contract can't see that, because
+it only sees the file; the lifecycle check runs on the diff, where the current value and the new one meet.
+A forbidden change rejects the row as a whole, with a reason the customer can act on, and counts towards
+the rejected ratio: a file full of impossible transitions is as suspicious as a file full of bad e-mails.
+Deactivation is a status change too, so it obeys the same rules: the engine never forces a record into a
+state the lifecycle forbids, it leaves it and says so.
+
 ### Deactivate, never delete
 
 Records leaving the file get the `deactivate.set` values (for example `status: inactive`). Nothing is
@@ -210,6 +221,7 @@ src/syncline/
   mapping/draft.py   draft flow file with confidences and REVIEW markers
   entities.py        built-in target fields and their synonyms
   contract.py        required / allowed / unique / max ratio
+  lifecycle.py       allowed states and transitions, checked on the diff
   diff.py            create / update / deactivate / unchanged
   targets/base.py    what a target does (read, apply, report failures)
   targets/sql.py     table creation, reads, transactional writes

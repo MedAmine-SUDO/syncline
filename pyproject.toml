@@ -1,6 +1,6 @@
 [project]
 name = "syncline"
-version = "0.3.0"
+version = "0.4.0"
 description = "Describe a data sync in a YAML file instead of writing a script: messy customer files in, clean upserts out, with a dry-run diff and a readable rejected-rows report."
 readme = "README.md"
 license = "MIT"

@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 (2026-11-23)
+
+Lifecycle rules.
 
 - Lifecycle rules (`lifecycle: {field, initial, transitions}`): new records must start in an initial state,
   updates must follow an allowed transition, unknown or emptied states are refused. Refused rows are rejected

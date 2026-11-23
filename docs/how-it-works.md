@@ -6,8 +6,8 @@ Every decision below follows from it.
 ## A run, step by step
 
 ```
-1. read      file → text table (encoding and delimiter detected, line numbers kept);
-             the file is kept in the archive by its hash
+1. read      fetch the file (folder, S3 or SFTP) → text table (encoding and delimiter
+             detected, line numbers kept); the file is kept in the archive by its hash
 2. skip?     same bytes (sha256) as the last successful run → stop, nothing to do
 3. map       hook after_read → rename, transform, translate, default, type → hook after_map;
              bad cells become reasons
@@ -32,6 +32,29 @@ Problems that aren't about the data (a broken flow file, a missing source file, 
 an unreachable database) raise an error before anything is written.
 
 ## Decisions
+
+### Files come from where customers put them, and every source behaves the same
+
+Customers drop exports in a folder, a bucket or on an SFTP server. Each source only has to list candidate
+files and download one into the run's temporary folder; from there the run is identical (read, archive,
+skip check, map...), so a remote file gets exactly the same guarantees as a local one, including replay
+after the original is gone. The choice is the **last file by name**, never by modification time: dated
+names sort correctly, while timestamps change on every copy and upload.
+
+Remote sources add their own ways to go wrong, each handled before any processing:
+
+- **A file still being uploaded.** SFTP uploads aren't atomic: a file can be listed while half-written.
+  Files modified less than `min_age_seconds` ago (60 by default) are ignored; if they are the only
+  match, the run says so instead of reading an older file without warning. (S3 objects appear only
+  once fully uploaded, so S3 doesn't need this.)
+- **An incomplete download.** The downloaded size is compared with the size the server listed.
+- **The wrong server.** SFTP host keys are checked against `known_hosts`, and an unknown or changed key is
+  refused: trusting a server on first use is how files end up stolen or swapped.
+- **Leaked credentials.** Flow files are configuration, meant to be committed and reviewed; secrets are
+  `env:` references, and a plain password is a validation error. S3 uses the standard AWS credential chain,
+  so a read-only role works without any secret at all.
+
+The S3 and SFTP clients (boto3, paramiko) are optional extras, imported only when a flow uses them.
 
 ### Everything is read as text
 
@@ -155,6 +178,7 @@ mappings learned from past files) can be added without touching the rest.
 ```
 src/syncline/
   spec.py            flow file models and validation
+  io/fetch.py        getting the input file: folder, S3 or SFTP, into a temporary folder
   io/read.py         file discovery, encoding/delimiter detection, CSV/Excel as text
   mapping/apply.py   transforms, value maps, defaults, types → typed table + cell errors
   mapping/suggest.py offline matcher (names + values), MappingProvider protocol

@@ -16,6 +16,12 @@ docker run -d --name syncline-pg -e POSTGRES_PASSWORD=postgres -p 55432:5432 pos
 SYNCLINE_TEST_PG_URL=postgresql+psycopg://postgres:postgres@localhost:55432/postgres uv run pytest
 ```
 
+## SFTP tests against OpenSSH
+
+`tests/test_source_sftp.py` runs against an SFTP server started inside the test process and always runs.
+`tests/test_source_sftp_openssh.py` also checks a real OpenSSH server when `SYNCLINE_TEST_SFTP_PORT` is set
+(CI starts one); its docstring has the `docker run` command. S3 tests use moto and need nothing.
+
 ## Conventions
 
 - Problems with the data are **results** (rejected rows, run statuses), not exceptions.

@@ -17,6 +17,7 @@ Problems with the flow file, the source, a hook or the target raise exceptions i
 from __future__ import annotations
 
 import secrets
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -25,7 +26,8 @@ from syncline.archive import Archive
 from syncline.contract import Checked, ContractFailure, check
 from syncline.diff import CHANGED, Diff, compute
 from syncline.hooks import HookContext, Hooks, Stage
-from syncline.io.read import ROW, ReadResult, find_file, read_file
+from syncline.io.fetch import fetch
+from syncline.io.read import ROW, ReadResult, read_file
 from syncline.mapping.apply import Mapped, apply_mapping
 from syncline.spec import FlowSpec, Guard, load_flow
 from syncline.state import RunRecord, State, now
@@ -140,74 +142,79 @@ def run(
         return RunRecord(**base)
 
     hooks = Hooks.load(spec.hooks.configured(), flow_path.parent)
-    path = find_file(spec.source, flow_path.parent, file)
-    read = read_file(path, spec.source)
-    kept = archive.store(spec.flow, path, read.sha256) if archive else None
-    where = {
-        "file": str(path), "sha256": read.sha256, "total": read.df.height,
-        "archived": str(kept) if kept else None,
-    }  # fmt: skip
+    # Remote files are downloaded here; the folder is removed when the run ends.
+    with tempfile.TemporaryDirectory(prefix="syncline-") as tmp:
+        workdir = Path(tmp)
+        fetched = fetch(spec.source, flow_path.parent, workdir, file)
+        path = fetched.path
+        read = read_file(path, spec.source)
+        kept = archive.store(spec.flow, path, read.sha256) if archive else None
+        where = {
+            "file": fetched.origin, "sha256": read.sha256, "total": read.df.height,
+            "archived": str(kept) if kept else None,
+        }  # fmt: skip
 
-    last = state.last_ok(spec.flow)
-    if not force and not dry_run and last is not None and last.sha256 == read.sha256:
-        rec = record("skipped", **where, message=f"same file as run {last.id}: nothing to do")
-        state.save(rec)
-        return RunResult(record=rec, spec=spec, read=read)
+        last = state.last_ok(spec.flow)
+        if not force and not dry_run and last is not None and last.sha256 == read.sha256:
+            rec = record("skipped", **where, message=f"same file as run {last.id}: nothing to do")
+            state.save(rec)
+            return RunResult(record=rec, spec=spec, read=read)
 
-    def ctx(stage: Stage) -> HookContext:
-        return HookContext(spec.flow, spec.entity, path, run_id, dry_run, stage)
+        def ctx(stage: Stage) -> HookContext:
+            return HookContext(spec.flow, spec.entity, path, run_id, dry_run, stage, fetched.origin)
 
-    text = hooks.run("after_read", read.df, ctx("after_read"))
-    mapped = apply_mapping(text, spec.mapping)
-    mapped = Mapped(df=hooks.run("after_map", mapped.df, ctx("after_map")), errors=mapped.errors)
-    try:
-        checked = check(mapped, spec.contract)
-    except ContractFailure as e:
-        rejected = rejected_details(read, e.checked)
-        rec = record("rejected", **where, rejected=e.checked.rejected.height, message=str(e))
-        state.save(rec, rejected)
-        return RunResult(record=rec, spec=spec, read=read, checked=e.checked, rejected=rejected)
+        text = hooks.run("after_read", read.df, ctx("after_read"))
+        mapped = apply_mapping(text, spec.mapping)
+        after_map = hooks.run("after_map", mapped.df, ctx("after_map"))
+        mapped = Mapped(df=after_map, errors=mapped.errors)
+        try:
+            checked = check(mapped, spec.contract)
+        except ContractFailure as e:
+            rejected = rejected_details(read, e.checked)
+            rec = record("rejected", **where, rejected=e.checked.rejected.height, message=str(e))
+            state.save(rec, rejected)
+            return RunResult(record=rec, spec=spec, read=read, checked=e.checked, rejected=rejected)
 
-    deactivate = spec.load.deactivate.set if spec.load.deactivate else None
-    table = SqlTable.open(
-        spec.load.target, spec.mapping, spec.load.key, extra=deactivate, create=not dry_run
-    )
-    current = table.read(spec.load.key)
-    policies = {f: m.update for f, m in spec.mapping.items()}
-    diff = compute(
-        checked.valid, current, spec.load.key, deactivate, present=mapped.df, policies=policies
-    )
-    rejected = rejected_details(read, checked)
-    counts = diff.counts()
-    totals = dict(
-        created=counts["create"],
-        updated=counts["update"],
-        deactivated=counts["deactivate"],
-        unchanged=counts["unchanged"],
-        rejected=checked.rejected.height,
-    )
-    result = RunResult(
-        record=record("pending"), spec=spec, read=read, checked=checked, diff=diff,
-        rejected=rejected,
-    )  # fmt: skip
+        deactivate = spec.load.deactivate.set if spec.load.deactivate else None
+        table = SqlTable.open(
+            spec.load.target, spec.mapping, spec.load.key, extra=deactivate, create=not dry_run
+        )
+        current = table.read(spec.load.key)
+        policies = {f: m.update for f, m in spec.mapping.items()}
+        diff = compute(
+            checked.valid, current, spec.load.key, deactivate, present=mapped.df, policies=policies
+        )
+        rejected = rejected_details(read, checked)
+        counts = diff.counts()
+        totals = dict(
+            created=counts["create"],
+            updated=counts["update"],
+            deactivated=counts["deactivate"],
+            unchanged=counts["unchanged"],
+            rejected=checked.rejected.height,
+        )
+        result = RunResult(
+            record=record("pending"), spec=spec, read=read, checked=checked, diff=diff,
+            rejected=rejected,
+        )  # fmt: skip
 
-    violations = guard_violations(diff, current.height, spec.load.guard)
-    if violations and not allow_mass_change:
-        message = "; ".join(violations)
-        if dry_run:
-            result.warnings.append(f"a real run would stop: {message}")
-        else:
-            result.record = record("guarded", **where, **totals, message=message)
-            state.save(result.record, rejected, change_log(diff))
-            return result
+        violations = guard_violations(diff, current.height, spec.load.guard)
+        if violations and not allow_mass_change:
+            message = "; ".join(violations)
+            if dry_run:
+                result.warnings.append(f"a real run would stop: {message}")
+            else:
+                result.record = record("guarded", **where, **totals, message=message)
+                state.save(result.record, rejected, change_log(diff))
+                return result
 
-    if not dry_run:
-        table.apply(diff)
+        if not dry_run:
+            table.apply(diff)
 
-    note = "; ".join(result.warnings) or None
-    result.record = record("dry_run" if dry_run else "ok", **where, **totals, message=note)
-    state.save(result.record, rejected, change_log(diff))
-    return result
+        note = "; ".join(result.warnings) or None
+        result.record = record("dry_run" if dry_run else "ok", **where, **totals, message=note)
+        state.save(result.record, rejected, change_log(diff))
+        return result
 
 
 class ReplayError(Exception):

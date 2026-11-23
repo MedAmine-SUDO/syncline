@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- S3 source (`type: s3`, extra `syncline[s3]`): AWS or S3-compatible stores, standard AWS credential chain,
+  last matching key by name, download size checked.
+- SFTP source (`type: sftp`, extra `syncline[sftp]`): password or key login, host keys checked against
+  `known_hosts` (unknown or changed servers refused), files modified less than `min_age_seconds` ago ignored,
+  download size checked.
+- Secrets in flow files are refused: passwords and passphrases must be `env:VARIABLE` references.
+- Runs record where the file came from (`s3://...`, `sftp://...`); remote files are archived like local ones.
+- `source.type` may be left out (defaults to `file`); clearer messages for source errors.
+- `HookContext.origin`: where the file came from.
+
 ## 0.2.0 (2026-11-23)
 
 - Hooks: `hooks: {after_read, after_map}` run Python functions next to the flow; the engine checks that

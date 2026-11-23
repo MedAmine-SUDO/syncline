@@ -14,7 +14,7 @@ from pathlib import Path
 
 import polars as pl
 
-from syncline.spec import FileSource
+from syncline.spec import FileSource, ReadOptions
 
 ROW = "__row"  # line number in the source file (header = line 1)
 _DELIMITERS = [",", ";", "\t", "|"]
@@ -94,7 +94,7 @@ def _clean_headers(df: pl.DataFrame, path: Path) -> pl.DataFrame:
     return df.rename(dict(zip(df.columns, names, strict=True)))
 
 
-def read_file(path: Path, source: FileSource) -> ReadResult:
+def read_file(path: Path, source: ReadOptions) -> ReadResult:
     try:
         data = path.read_bytes()
     except OSError as e:

@@ -49,6 +49,7 @@ class HookContext:
     run_id: str
     dry_run: bool
     stage: Stage
+    origin: str = ""  # where the file came from: a local path, s3://... or sftp://...
 
 
 def load_hook(ref: str, base_dir: Path) -> HookFn:

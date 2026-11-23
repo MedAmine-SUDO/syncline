@@ -24,15 +24,88 @@ It identifies the flow in the run history, so renaming a flow starts a new histo
 
 ## `source`
 
+Where the file comes from: a local folder (`file`), an S3 bucket (`s3`) or an SFTP server (`sftp`).
+Every source works the same way: the file name may be a glob (`employes_*.csv`), and the **last match by
+name** is used, so dated names (`2026-11-02`) pick the newest export. Modification times are not used to
+choose: they change on copy, checkout and upload. A remote file is downloaded to a temporary folder,
+checked for completeness (size), kept in the archive and processed like a local one; the run history
+records where it came from (`s3://acme-hr/exports/employes_2026-11-02.csv`).
+
+These keys apply to every source type:
+
 | Key | Default | Meaning |
 |---|---|---|
-| `type` | `file` | The only source type in this version. |
-| `path` | required | Path to the file, **relative to the flow file**. May be a glob (`employes_*.csv`): the **last match by name** is used, so dated names (`2026-11-02`) pick the newest export. Modification times are not used: they change on copy and checkout. |
+| `type` | `file` | `file`, `s3` or `sftp`. |
+| `path` | required | The file, or a pattern for its name (see each type). Only the file name may be a pattern, not the folders. |
 | `encoding` | detected | Force an encoding (`utf-8`, `cp1252`, ...). Detection tries UTF-8 with or without BOM, then Windows-1252. |
 | `delimiter` | detected | Force a CSV delimiter. Detection considers `,` `;` tab `\|`. |
 | `sheet` | first sheet | Excel only: the sheet name. |
 
-`syncline run --file other.csv` overrides `path` for one run.
+`syncline run --file other.csv` reads a local file instead, for one run, whatever the source type.
+
+**Secrets never go in flow files.** A password or passphrase is written `env:VARIABLE_NAME` and read from the
+environment at run time; a plain value is refused by `syncline validate`.
+
+### `type: file`
+
+`path` is **relative to the flow file** (or absolute).
+
+```yaml
+source: { type: file, path: exports/employes_*.csv }
+```
+
+### `type: s3`
+
+Needs `pip install 'syncline[s3]'`. Works with AWS S3 and S3-compatible stores (MinIO, Scaleway, OVH...).
+
+```yaml
+source:
+  type: s3
+  bucket: acme-hr-exports
+  path: hr/employes_*.csv          # the object key; objects in sub-folders (hr/old/...) are not considered
+  region: eu-west-3                 # optional
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `bucket` | required | Bucket name. |
+| `region` | from the AWS configuration | Region of the bucket. |
+| `endpoint_url` | AWS | An S3-compatible endpoint; may be `env:VARIABLE`. |
+| `profile` | default chain | A profile from `~/.aws/config`. |
+
+Credentials come from the standard AWS chain: `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`, a profile, SSO,
+or the role of the machine running Syncline. Syncline only needs `s3:ListBucket` on the prefix and
+`s3:GetObject` on the objects: give it a read-only role.
+
+### `type: sftp`
+
+Needs `pip install 'syncline[sftp]'`.
+
+```yaml
+source:
+  type: sftp
+  host: sftp.acme.example
+  username: syncline
+  password: env:ACME_SFTP_PASSWORD   # or key_file: keys/acme_ed25519
+  path: /outgoing/employes_*.csv     # absolute, or relative to the login folder
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `host` | required | Server name or address. |
+| `port` | `22` | |
+| `username` | required | May be `env:VARIABLE`. |
+| `password` | none | `env:VARIABLE` only. |
+| `key_file` | none | A private key file, relative to the flow file; `~` is expanded. |
+| `key_passphrase` | none | `env:VARIABLE` only. |
+| | | No password and no key file: the SSH agent and the usual `~/.ssh` keys are tried, like `sftp` does. |
+| `known_hosts` | `~/.ssh/known_hosts` | Where the server's host key is checked. |
+| `min_age_seconds` | `60` | Files modified more recently are ignored: they may still be uploading. `0` turns it off. |
+| `timeout_seconds` | `30` | Connection, banner and login timeout. |
+
+**An unknown server is refused, never trusted on first use.** Add its key once, after checking its
+fingerprint with the server's owner: `ssh-keyscan -p 22 sftp.acme.example >> ~/.ssh/known_hosts`. A server
+whose key changed is refused too. Both errors say what to do.
 
 Files ending in `.xlsx`, `.xlsm` or `.xls` are read as Excel (install `syncline[excel]`); anything else as CSV.
 

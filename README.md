@@ -58,8 +58,8 @@ Every B2B product that imports customer data ends up with the same pile of scrip
 ### 🗺️ Offline mapping assistant
 `syncline map export.csv` matches columns to fields by name (English and French synonyms, accents and punctuation ignored) and by content (e-mail-looking values, date formats). Every suggestion has a confidence; anything uncertain is marked `REVIEW`. No AI, no network.
 
-### 📥 Reads real-world files
-CSV or Excel. Encoding (UTF-8, BOM, Windows-1252) and delimiter (`,` `;` tab `|`) are detected. Every value is read as text first, so `00123` stays `00123`.
+### 📥 Reads real-world files, wherever they land
+CSV or Excel, from a folder, an S3 bucket or an SFTP server (host keys checked, half-uploaded files ignored, secrets only from the environment). Encoding (UTF-8, BOM, Windows-1252) and delimiter (`,` `;` tab `|`) are detected. Every value is read as text first, so `00123` stays `00123`.
 
 ### 🪝 Hooks, not forks
 A customer needs something special? A Python function next to their flow (`after_read`, `after_map`). The engine checks what it returns: no lost rows, no changed types.
@@ -187,10 +187,11 @@ Every input file is kept, read-only and stored by content hash, in `~/.syncline/
 | Area | Choice |
 |---|---|
 | Processing | Polars (every column read as text, typed by the mapping) |
+| Sources | Local files, S3 (boto3; tested with moto), SFTP (paramiko; tested with an in-process server and OpenSSH) |
 | Config | Pydantic v2 models, unknown keys rejected, JSON Schema export |
 | Targets and history | SQLAlchemy 2 (SQLite and Postgres tested) |
 | CLI and output | Typer, Rich, Jinja2 (autoescaped HTML report) |
-| Quality | pytest + Hypothesis, 97% branch coverage, mypy strict, ruff, pre-commit, CI on Python 3.12 and 3.13 with a Postgres service, plus a clean-install job that runs the demo from the built wheel |
+| Quality | pytest + Hypothesis, 97% branch coverage, mypy strict, ruff, pre-commit, CI on Python 3.12 and 3.13 with Postgres and OpenSSH SFTP services, plus a clean-install job that runs the demo from the built wheel |
 
 <br/>
 
@@ -220,7 +221,8 @@ Things the tests didn't catch at first, found by running the demo end to end and
 ## 🗺️ Roadmap
 
 - [x] Phase 1: files in, SQL out: mapping assistant, contracts, diff, guard, audit trail, reports
-- [ ] SFTP and S3 sources, a REST API target (the [LearnHub](https://github.com/MedAmine-SUDO/learnhub-mcp-server) mock LMS first)
+- [x] S3 and SFTP sources
+- [ ] A generic REST API target (retries, rate limits, idempotent writes)
 - [x] Per-field update policies (`always`, `if_empty`, `never`); updates write only what changed
 - [ ] Lifecycle rules (allowed status transitions per entity)
 - [x] Hooks for customer-specific logic, without forking the engine

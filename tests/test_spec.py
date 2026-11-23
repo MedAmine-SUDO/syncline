@@ -116,3 +116,47 @@ def test_cli_validate_error(tmp_path: Path) -> None:
     data["load"]["key"] = ["nope"]
     r = CliRunner().invoke(app, ["validate", str(write(tmp_path, data))])
     assert r.exit_code == 1
+
+
+def test_source_type_defaults_to_file(tmp_path: Path) -> None:
+    data = base()
+    del data["source"]["type"]
+    assert load_flow(write(tmp_path, data)).source.type == "file"
+
+
+def test_remote_sources_are_valid(tmp_path: Path) -> None:
+    data = base()
+    data["source"] = {"type": "s3", "bucket": "acme-hr", "path": "exports/employes_*.csv"}
+    assert load_flow(write(tmp_path, data)).source.type == "s3"
+    data["source"] = {
+        "type": "sftp", "host": "sftp.acme.example", "username": "acme",
+        "password": "env:ACME_SFTP_PASSWORD", "path": "/outgoing/employes_*.csv",
+    }  # fmt: skip
+    spec = load_flow(write(tmp_path, data))
+    assert spec.source.type == "sftp"
+    assert spec.source.port == 22 and spec.source.min_age_seconds == 60
+
+
+def test_a_password_in_the_flow_file_is_refused(tmp_path: Path) -> None:
+    data = base()
+    data["source"] = {
+        "type": "sftp", "host": "h", "username": "u", "password": "hunter2", "path": "/a/*.csv"
+    }  # fmt: skip
+    (p,) = problems(tmp_path, data)
+    assert p.startswith("source.password: secrets don't go in flow files")
+
+
+@pytest.mark.parametrize(
+    ("path", "message"),
+    [("exports/", "must end with a file name"), ("exp*/a.csv", "only the file name may be")],
+)
+def test_remote_path_pattern_only_in_the_file_name(tmp_path: Path, path: str, message: str) -> None:
+    data = base()
+    data["source"] = {"type": "s3", "bucket": "acme-hr", "path": path}
+    assert message in " ".join(problems(tmp_path, data))
+
+
+def test_unknown_source_type(tmp_path: Path) -> None:
+    data = base()
+    data["source"] = {"type": "ftp", "path": "x.csv"}
+    assert problems(tmp_path, data) == ["source: unknown type 'ftp'; use one of: file, s3, sftp"]

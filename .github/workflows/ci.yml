@@ -35,7 +35,22 @@ jobs:
           uv run ruff format --check
       - name: Types
         run: uv run mypy
-      - name: Tests (SQLite + Postgres), coverage >= 90%
+      - name: Start an OpenSSH SFTP server with the Acme export
+        run: |
+          uv run python scripts/make_examples.py /tmp/acme
+          mkdir -p /tmp/sftp-out && cp /tmp/acme/employes_2026-11-01.csv /tmp/sftp-out/
+          docker run -d -p 2222:22 -v /tmp/sftp-out:/home/acme/outgoing:ro \
+            atmoz/sftp:alpine acme:acme-test-pw:1001
+          for i in $(seq 1 30); do
+            ssh-keyscan -p 2222 127.0.0.1 > /tmp/sftp_known_hosts 2>/dev/null
+            [ -s /tmp/sftp_known_hosts ] && break; sleep 1
+          done
+          test -s /tmp/sftp_known_hosts
+      - name: Tests (SQLite, Postgres, S3 via moto, SFTP), coverage >= 90%
+        env:
+          SYNCLINE_TEST_SFTP_PORT: "2222"
+          SYNCLINE_TEST_SFTP_KNOWN_HOSTS: /tmp/sftp_known_hosts
+          SYNCLINE_TEST_SFTP_PASSWORD: acme-test-pw
         run: uv run pytest -q --cov
 
   install:

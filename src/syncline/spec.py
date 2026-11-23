@@ -27,7 +27,15 @@ class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-class FileSource(_Strict):
+class ReadOptions(_Strict):
+    """How the file's bytes are read, whatever the source."""
+
+    encoding: str | None = None  # None = detect (utf-8, utf-8-sig, cp1252)
+    delimiter: str | None = None  # None = detect (, ; tab |)
+    sheet: str | None = None  # Excel only; None = first sheet
+
+
+class FileSource(ReadOptions):
     """A local CSV or Excel file.
 
     `path` is relative to the flow file and may be a glob: the last match by name is used.
@@ -35,9 +43,76 @@ class FileSource(_Strict):
 
     type: Literal["file"] = "file"
     path: str
-    encoding: str | None = None  # None = detect (utf-8, utf-8-sig, cp1252)
-    delimiter: str | None = None  # None = detect (, ; tab |)
-    sheet: str | None = None  # Excel only; None = first sheet
+
+
+# A secret is never written in a flow file, only the name of the environment variable holding it.
+_ENV_REF = r"^env:[A-Za-z_][A-Za-z0-9_]*$"
+EnvRef = Annotated[str, Field(pattern=_ENV_REF)]
+
+
+def _remote_pattern(v: str) -> str:
+    folder, _, name = v.rstrip().rpartition("/")
+    if not name:
+        raise ValueError("must end with a file name or pattern, e.g. exports/employes_*.csv")
+    if any(c in folder for c in "*?["):
+        raise ValueError("only the file name may be a pattern, not the folder")
+    return v
+
+
+class S3Source(ReadOptions):
+    """An object in an S3 bucket (or an S3-compatible store: MinIO, Scaleway, OVH...).
+
+    `path` is the object key, whose file name may be a glob (`exports/employes_*.csv`): the
+    last match by key is used. Credentials come from the usual AWS chain (environment,
+    profile, instance role), never from the flow file.
+    """
+
+    type: Literal["s3"]
+    bucket: Annotated[str, Field(min_length=3, max_length=63, pattern=r"^[a-z0-9][a-z0-9.\-]+$")]
+    path: str
+    region: str | None = None
+    endpoint_url: str | None = None  # S3-compatible stores; may be env:VAR
+    profile: str | None = None  # an AWS profile from ~/.aws/config
+
+    _pattern = field_validator("path")(_remote_pattern)
+
+
+class SftpSource(ReadOptions):
+    """A file on an SFTP server.
+
+    `path` is the remote path, whose file name may be a glob (`/outgoing/employes_*.csv`).
+    The server's host key must be in `known_hosts` (default ~/.ssh/known_hosts): an unknown
+    server is refused, never trusted on first use. Files modified less than `min_age_seconds`
+    ago are ignored, so a file still being uploaded is never read half-written.
+    """
+
+    type: Literal["sftp"]
+    host: Annotated[str, Field(min_length=1)]
+    port: Annotated[int, Field(ge=1, le=65535)] = 22
+    username: Annotated[str, Field(min_length=1)]  # or env:VAR
+    password: EnvRef | None = None
+    key_file: str | None = None  # private key; ~ expanded, relative to the flow file
+    key_passphrase: EnvRef | None = None
+    known_hosts: str | None = None
+    path: str
+    min_age_seconds: Annotated[int, Field(ge=0)] = 60
+    timeout_seconds: Annotated[float, Field(gt=0)] = 30
+
+    _pattern = field_validator("path")(_remote_pattern)
+
+    @field_validator("password", "key_passphrase", mode="before")
+    @classmethod
+    def _no_plain_secret(cls, v: Any) -> Any:
+        if isinstance(v, str) and not v.startswith("env:"):
+            raise ValueError(
+                "secrets don't go in flow files: put it in an environment variable and "
+                "write env:VARIABLE_NAME, e.g. password: env:ACME_SFTP_PASSWORD"
+            )
+        return v
+
+
+Source = Annotated[FileSource | S3Source | SftpSource, Field(discriminator="type")]
+_SOURCE_TYPES = ("file", "s3", "sftp")
 
 
 class FieldMapping(_Strict):
@@ -141,7 +216,7 @@ class HookRefs(_Strict):
 class FlowSpec(_Strict):
     flow: str
     entity: str
-    source: FileSource
+    source: Source
     mapping: dict[str, FieldMapping] = Field(min_length=1)
     contract: Contract = Field(default_factory=Contract)
     load: Load
@@ -152,6 +227,14 @@ class FlowSpec(_Strict):
     def _flow_name(cls, v: str) -> str:
         if not _FLOW_NAME.match(v):
             raise ValueError("use lowercase letters, digits and underscores, e.g. acme_users")
+        return v
+
+    @field_validator("source", mode="before")
+    @classmethod
+    def _default_type(cls, v: Any) -> Any:
+        # `type: file` may be left out
+        if isinstance(v, dict) and "type" not in v:
+            return {"type": "file", **v}
         return v
 
     @field_validator("mapping", mode="before")
@@ -219,10 +302,15 @@ def load_flow(path: Path) -> FlowSpec:
 
 
 def _describe(err: Any) -> str:
-    loc = ".".join(str(p) for p in err["loc"])
+    parts = [str(p) for p in err["loc"]]
+    if parts[:1] == ["source"] and len(parts) > 1 and parts[1] in _SOURCE_TYPES:
+        del parts[1]  # pydantic adds the union tag: source.sftp.password → source.password
+    loc = ".".join(parts)
     msg = str(err["msg"]).removeprefix("Value error, ")
     if err["type"] == "extra_forbidden":
         msg = "unknown key (typo?)"
+    elif err["type"] == "union_tag_invalid":
+        msg = f"unknown type {err['input'].get('type')!r}; use one of: {', '.join(_SOURCE_TYPES)}"
     return f"{loc}: {msg}" if loc else msg
 
 

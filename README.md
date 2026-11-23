@@ -73,8 +73,8 @@ Incoming rows are compared with the target by business key. The result (create /
 ### 🔁 Safe to re-run
 One transaction per run; a failure leaves the target untouched. The same file twice is skipped, and forcing it changes nothing. Updates write only the fields that changed, and per-field policies (`if_empty`, `never`) protect what people edit in the app.
 
-### 🧾 Audit trail and reports
-Every change is stored with its old and new values. Any run's HTML report can be rebuilt later, even after the source file is gone. `--json` output for schedulers, documented exit codes.
+### 🧾 Audit trail, reports and replay
+Every input file is kept by its hash, so any run can be replayed after a fix. Every change is stored with its old and new values. Any run's HTML report can be rebuilt later, even after the source file is gone. `--json` output for schedulers, documented exit codes.
 
 </td>
 </tr>
@@ -168,12 +168,14 @@ See [docs/how-it-works.md](docs/how-it-works.md): why everything is read as text
 | `syncline validate FLOW` | Check a flow file without running it |
 | `syncline run FLOW [-f FILE] [--dry-run] [--force] [--allow-mass-change] [--report-dir DIR] [--json]` | Run a flow |
 | `syncline runs [--flow NAME]` | Recent runs |
+| `syncline replay RUN_ID [--flow FLOW] [--dry-run]` | Run a past run's kept input file again, through the flow's current configuration |
 | `syncline report RUN_ID [-o FILE] [--json]` | Rebuild a run's report from the history |
 | `syncline schema` | JSON Schema for flow files |
 
 **Exit codes**: `0` done (including dry runs and skips) · `1` flow file, source file or mapping problem · `2` too many invalid rows, nothing loaded · `3` target problem · `4` stopped by the guard, nothing written.
 
 The run history is a small SQLite file (`~/.syncline/state.db`; change it with `--state` or `SYNCLINE_STATE`).
+Every input file is kept, read-only and stored by content hash, in `~/.syncline/archive` (`--archive` or `SYNCLINE_ARCHIVE`; `--no-archive` to skip), so `syncline replay` can re-run any past run on exactly the same bytes, for example after fixing a mapping.
 
 <br/>
 
@@ -219,7 +221,7 @@ Things the tests didn't catch at first, found by running the demo end to end and
 - [x] Per-field update policies (`always`, `if_empty`, `never`); updates write only what changed
 - [ ] Lifecycle rules (allowed status transitions per entity)
 - [ ] Hooks for customer-specific logic, without forking the engine
-- [ ] Quarantine and replay from kept raw files
+- [x] Raw-file archive and `syncline replay` (same bytes, current rules)
 - [ ] A scheduler and a small UI for many customers at once
 - [ ] An optional LLM provider behind the same interface as the offline matcher
 

@@ -5,14 +5,16 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, NoReturn
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
 from syncline import __version__
-from syncline.engine import RunResult, preview_changes
+from syncline.archive import Archive, ArchiveError
+from syncline.engine import ReplayError, RunResult, preview_changes
+from syncline.engine import replay as replay_run
 from syncline.engine import run as run_flow
 from syncline.entities import ENTITIES, Entity, custom_entity
 from syncline.io.read import SourceError, read_file
@@ -21,7 +23,7 @@ from syncline.mapping.draft import draft_flow
 from syncline.mapping.suggest import REVIEW, SAMPLE_ROWS, OfflineMatcher
 from syncline.report.html import ReportError, render_html, render_json, write_report
 from syncline.spec import FileSource, SpecError, json_schema, load_flow
-from syncline.state import DEFAULT_STATE, State
+from syncline.state import State
 from syncline.targets.sql import TargetError
 
 app = typer.Typer(
@@ -37,7 +39,20 @@ EXIT_CONTRACT = 2  # too many rejected rows: nothing loaded
 EXIT_TARGET = 3  # target unreachable or doesn't match
 EXIT_GUARD = 4  # changes too large: nothing written
 
-StateOpt = Annotated[Path, typer.Option("--state", help="Run history database.")]
+StateOpt = Annotated[
+    Path | None,
+    typer.Option(
+        "--state", help="Run history database [default: $SYNCLINE_STATE or ~/.syncline/state.db]."
+    ),
+]
+ArchiveOpt = Annotated[
+    Path | None,
+    typer.Option(
+        "--archive",
+        help="Where input files are kept, for replay "
+        "[default: $SYNCLINE_ARCHIVE or ~/.syncline/archive].",
+    ),
+]
 
 
 def _version(value: bool) -> None:
@@ -152,7 +167,11 @@ def run(
     as_json: Annotated[
         bool, typer.Option("--json", help="Print a JSON summary instead (for schedulers).")
     ] = False,
-    state: StateOpt = DEFAULT_STATE,
+    archive_dir: ArchiveOpt = None,
+    no_archive: Annotated[
+        bool, typer.Option("--no-archive", help="Don't keep a copy of the input file.")
+    ] = False,
+    state: StateOpt = None,
 ) -> None:
     """Run a flow: read, map, check, diff, then load (unless --dry-run).
 
@@ -164,16 +183,62 @@ def run(
         res = run_flow(
             flow, file=file, dry_run=dry_run, force=force,
             allow_mass_change=allow_mass_change, state=store,
+            archive=None if no_archive else Archive(archive_dir),
         )  # fmt: skip
-    except SpecError as e:
+    except Exception as e:
+        _fail(e)
+    _finish(res, store, report_dir, as_json)
+
+
+@app.command()
+def replay(
+    run_id: Annotated[str, typer.Argument(help="Run id, or a unique start of it.")],
+    flow: Annotated[
+        Path | None, typer.Option("--flow", help="Flow file to use (default: the run's own).")
+    ] = None,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Show what would change; write nothing.")
+    ] = False,
+    allow_mass_change: Annotated[
+        bool,
+        typer.Option("--allow-mass-change", help="Apply even if the guard limits are exceeded."),
+    ] = False,
+    report_dir: Annotated[
+        Path | None, typer.Option("--report-dir", help="Write the HTML report here.")
+    ] = None,
+    as_json: Annotated[bool, typer.Option("--json", help="Print a JSON summary instead.")] = False,
+    state: StateOpt = None,
+) -> None:
+    """Run a past run's archived input file again, with the flow's current configuration.
+
+    Same exit codes as `run`.
+    """
+    store = State(state)
+    try:
+        res = replay_run(
+            run_id, state=store, flow_path=flow, dry_run=dry_run,
+            allow_mass_change=allow_mass_change,
+        )  # fmt: skip
+    except Exception as e:
+        _fail(e)
+    _finish(res, store, report_dir, as_json)
+
+
+def _fail(e: Exception) -> NoReturn:
+    """Print a known error and exit with its code; re-raise anything unexpected."""
+    if isinstance(e, SpecError):
         _print_spec_error(e)
         raise typer.Exit(EXIT_CONFIG) from None
-    except (SourceError, MappingError) as e:
+    if isinstance(e, SourceError | MappingError | ArchiveError | ReplayError):
         err.print(f"[bold red]✗[/] {e}")
         raise typer.Exit(EXIT_CONFIG) from None
-    except TargetError as e:
+    if isinstance(e, TargetError):
         err.print(f"[bold red]✗ target:[/] {e}")
         raise typer.Exit(EXIT_TARGET) from None
+    raise e
+
+
+def _finish(res: RunResult, store: State, report_dir: Path | None, as_json: bool) -> None:
     report = write_report(store, res.record.id, report_dir) if report_dir else None
     if as_json:
         summary = {**res.record.__dict__, "warnings": res.warnings}
@@ -196,7 +261,7 @@ def report(
         Path | None, typer.Option("--output", "-o", help="Write here instead of stdout.")
     ] = None,
     as_json: Annotated[bool, typer.Option("--json", help="Full run detail as JSON.")] = False,
-    state: StateOpt = DEFAULT_STATE,
+    state: StateOpt = None,
 ) -> None:
     """Rebuild the report of a past run from the run history."""
     try:
@@ -215,7 +280,7 @@ def report(
 def runs(
     flow: Annotated[str | None, typer.Option("--flow", help="Only this flow.")] = None,
     limit: Annotated[int, typer.Option("--limit", "-n")] = 20,
-    state: StateOpt = DEFAULT_STATE,
+    state: StateOpt = None,
 ) -> None:
     """Show recent runs."""
     t = Table(header_style="dim")

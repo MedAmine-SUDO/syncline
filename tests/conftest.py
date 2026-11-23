@@ -12,6 +12,13 @@ import pytest
 ROOT = Path(__file__).parent.parent
 
 
+@pytest.fixture(autouse=True)
+def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never touch the real ~/.syncline: history and archive go to the test's temp folder."""
+    monkeypatch.setenv("SYNCLINE_STATE", str(tmp_path / "default-state.db"))
+    monkeypatch.setenv("SYNCLINE_ARCHIVE", str(tmp_path / "default-archive"))
+
+
 @pytest.fixture
 def acme(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """examples/acme regenerated in tmp, APP_DB_URL pointing at a temp SQLite file."""

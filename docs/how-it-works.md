@@ -6,7 +6,8 @@ Every decision below follows from it.
 ## A run, step by step
 
 ```
-1. read      file → text table (encoding and delimiter detected, line numbers kept)
+1. read      file → text table (encoding and delimiter detected, line numbers kept);
+             the file is kept in the archive by its hash
 2. skip?     same bytes (sha256) as the last successful run → stop, nothing to do
 3. map       rename, transform, translate, default, type; bad cells become reasons
 4. contract  required / allowed / unique; too many bad rows → stop
@@ -104,6 +105,22 @@ would look less dangerous than it is. Dry runs never stop; they warn.
 The run history stores the file's sha256. If it matches the last successful run, the run is skipped and
 recorded as `skipped`. `--force` runs it anyway, and the diff shows nothing to do.
 
+### Every input file is kept, and any run can be replayed
+
+Before anything else happens, the input file is copied to the archive, named by its sha256
+(`<archive>/<flow>/<sha256>.csv`): the same file is stored once, nothing is ever overwritten, the copy is
+read-only and written atomically (temp file, then rename). The run records where its file was kept.
+
+`syncline replay RUN_ID` runs that exact file again through the flow's **current** configuration, which is
+what you want after fixing a mapping or a contract: same bytes, new rules, recorded as a new run
+("replay of run …"). The archived file is checked against its hash first; a modified copy is refused.
+The customer's original file can be gone by then.
+
+### The history upgrades itself
+
+Newer versions store more per run (the flow file used, the archived file). Opening a history written by an
+older version adds the missing columns in place; old runs stay readable and simply can't be replayed.
+
 ### The run history lives in its own database
 
 Runs, rejected rows and the change log are kept in a small SQLite file, separate from the target, so the
@@ -138,7 +155,8 @@ src/syncline/
   diff.py            create / update / deactivate / unchanged
   targets/sql.py     table creation, reads, transactional writes
   engine.py          one run, stage by stage, and the guard
-  state.py           run history, rejected rows, change log
+  state.py           run history, rejected rows, change log, in-place upgrades
+  archive.py         content-addressed, read-only copies of input files
   report/            HTML report (Jinja2, autoescaped) and JSON
   cli.py             commands, exit codes
 ```

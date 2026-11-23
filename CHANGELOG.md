@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Raw-file archive: every input file is kept, read-only, by content hash (`--archive`, `SYNCLINE_ARCHIVE`,
+  `--no-archive`); runs record the flow file and the archived file.
+- `syncline replay RUN_ID`: re-run a past run's archived file through the flow's current configuration;
+  the archive copy is verified against its hash first.
+- Run histories from 0.1.0 are upgraded in place.
+- Default history and archive paths are read from the environment at call time.
+
 - Per-field update policies: `update: always | if_empty | never` on mapping fields.
 - Updates write only the fields that changed in each row (grouped by changed set), so protected fields and
   concurrent edits in the application are left alone.

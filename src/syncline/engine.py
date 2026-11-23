@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from syncline.archive import Archive
 from syncline.contract import Checked, ContractFailure, check
 from syncline.diff import CHANGED, Diff, compute
 from syncline.io.read import ROW, ReadResult, find_file, read_file
@@ -111,8 +112,14 @@ def run(
     force: bool = False,
     allow_mass_change: bool = False,
     state: State | None = None,
+    archive: Archive | None = None,
+    replay_of: str | None = None,
 ) -> RunResult:
-    """Run a flow and record the run. See the module docstring for the outcomes."""
+    """Run a flow and record the run. See the module docstring for the outcomes.
+
+    With an `archive`, the input file is kept (by content hash) before anything else
+    happens, so the run can be replayed later on exactly the same bytes.
+    """
     state = state or State()
     spec = load_flow(flow_path)
     started = now()
@@ -123,13 +130,21 @@ def run(
             id=run_id, flow=spec.flow, file=None, sha256=None, started_at=started,
             finished_at=now(), status=status, total=0, created=0, updated=0,
             deactivated=0, unchanged=0, rejected=0, message=None,
+            flow_path=str(flow_path.resolve()),
         )  # fmt: skip
         base.update(kw)
+        if replay_of:
+            note = f"replay of run {replay_of}"
+            base["message"] = f"{note}; {base['message']}" if base["message"] else note
         return RunRecord(**base)
 
     path = find_file(spec.source, flow_path.parent, file)
     read = read_file(path, spec.source)
-    where = {"file": str(path), "sha256": read.sha256, "total": read.df.height}
+    kept = archive.store(spec.flow, path, read.sha256) if archive else None
+    where = {
+        "file": str(path), "sha256": read.sha256, "total": read.df.height,
+        "archived": str(kept) if kept else None,
+    }  # fmt: skip
 
     last = state.last_ok(spec.flow)
     if not force and not dry_run and last is not None and last.sha256 == read.sha256:
@@ -186,6 +201,41 @@ def run(
     result.record = record("dry_run" if dry_run else "ok", **where, **totals, message=note)
     state.save(result.record, rejected, change_log(diff))
     return result
+
+
+class ReplayError(Exception):
+    """A run can't be replayed (unknown run, no archived file, wrong flow file)."""
+
+
+def replay(
+    run_id: str,
+    *,
+    state: State,
+    flow_path: Path | None = None,
+    dry_run: bool = False,
+    allow_mass_change: bool = False,
+) -> RunResult:
+    """Run a past run's archived input file again, through the flow's current configuration.
+
+    Useful after fixing a mapping or a contract: the same bytes, the new rules. The archived
+    file is checked against its hash first; the replay is recorded as a new run.
+    """
+    past = state.find(run_id)
+    if past is None:
+        raise ReplayError(f"no single run matches {run_id!r} (see `syncline runs`)")
+    if not past.archived or not past.sha256:
+        raise ReplayError(f"run {past.id} has no archived input file (it ran with --no-archive)")
+    flow = flow_path or (Path(past.flow_path) if past.flow_path else None)
+    if flow is None:
+        raise ReplayError(f"run {past.id} doesn't record its flow file; pass --flow")
+    spec = load_flow(flow)
+    if spec.flow != past.flow:
+        raise ReplayError(f"{flow} is flow {spec.flow!r}, but run {past.id} was {past.flow!r}")
+    kept = Archive.verify(Path(past.archived), past.sha256)
+    return run(
+        flow, file=kept, dry_run=dry_run, force=True, allow_mass_change=allow_mass_change,
+        state=state, replay_of=past.id,
+    )  # fmt: skip
 
 
 def preview_changes(diff: Diff, limit: int = 5) -> list[str]:

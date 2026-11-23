@@ -1,4 +1,4 @@
-"""Run history: one row per run, plus the rejected rows of each run.
+"""Run history: one row per run, plus its rejected rows and its change log.
 
 Kept in its own small SQLite database (not in the target), so history survives
 whatever happens to the target and never mixes with business data.
@@ -15,7 +15,11 @@ from typing import Any
 
 import sqlalchemy as sa
 
-DEFAULT_STATE = Path(os.environ.get("SYNCLINE_STATE", Path.home() / ".syncline" / "state.db"))
+
+def default_state() -> Path:
+    """SYNCLINE_STATE, or ~/.syncline/state.db. Read at call time, not import time."""
+    return Path(os.environ.get("SYNCLINE_STATE", Path.home() / ".syncline" / "state.db"))
+
 
 _meta = sa.MetaData()
 runs = sa.Table(
@@ -35,6 +39,8 @@ runs = sa.Table(
     sa.Column("unchanged", sa.Integer, default=0),
     sa.Column("rejected", sa.Integer, default=0),
     sa.Column("message", sa.Text),
+    sa.Column("flow_path", sa.String),  # the flow file used (for replay)
+    sa.Column("archived", sa.String),  # where the input file was kept (for replay)
 )
 rejected_rows = sa.Table(
     "rejected_rows",
@@ -71,6 +77,8 @@ class RunRecord:
     unchanged: int
     rejected: int
     message: str | None
+    flow_path: str | None = None
+    archived: str | None = None
 
 
 def now() -> datetime:
@@ -78,11 +86,25 @@ def now() -> datetime:
 
 
 class State:
-    def __init__(self, path: Path = DEFAULT_STATE) -> None:
+    def __init__(self, path: Path | None = None) -> None:
+        path = path or default_state()
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
         self.engine = sa.create_engine(f"sqlite:///{path}")
         _meta.create_all(self.engine)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Add columns that newer versions store to a history created by an older one."""
+        with self.engine.begin() as conn:
+            for table in _meta.sorted_tables:
+                existing = {c["name"] for c in sa.inspect(conn).get_columns(table.name)}
+                for column in table.columns:
+                    if column.name not in existing:
+                        ddl = column.type.compile(dialect=conn.dialect)
+                        conn.execute(
+                            sa.text(f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {ddl}')
+                        )
 
     def save(
         self,

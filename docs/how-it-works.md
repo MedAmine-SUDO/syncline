@@ -9,7 +9,8 @@ Every decision below follows from it.
 1. read      file → text table (encoding and delimiter detected, line numbers kept);
              the file is kept in the archive by its hash
 2. skip?     same bytes (sha256) as the last successful run → stop, nothing to do
-3. map       rename, transform, translate, default, type; bad cells become reasons
+3. map       hook after_read → rename, transform, translate, default, type → hook after_map;
+             bad cells become reasons
 4. contract  required / allowed / unique; too many bad rows → stop
 5. diff      valid rows vs target rows, by business key
 6. guard     changes too large → stop
@@ -133,6 +134,14 @@ The HTML report starts with "Rows we couldn't load", with the reason and the ori
 written so a non-technical person can fix the next export. Everything from the file is HTML-escaped
 (customer data is untrusted input).
 
+### Custom logic goes in hooks, with rules the engine enforces
+
+Some customers need logic no configuration covers. Instead of forking the engine (the road back to one
+script per customer), a flow can name Python functions to run on the text table after reading and on the
+typed table after mapping. The engine checks what comes back: a hook may change values, but it can't make
+rows disappear (that would deactivate people in a full snapshot) or change the types the contract and the
+target rely on. A failing hook stops the run before anything is written.
+
 ### Mapping suggestions are cautious
 
 `syncline map` prefers leaving a field unmapped over guessing: a missing mapping is visible and harmless,
@@ -154,7 +163,8 @@ src/syncline/
   contract.py        required / allowed / unique / max ratio
   diff.py            create / update / deactivate / unchanged
   targets/sql.py     table creation, reads, transactional writes
-  engine.py          one run, stage by stage, and the guard
+  engine.py          one run, stage by stage, the guard, and replay
+  hooks.py           loading and calling hooks, and the rules they must follow
   state.py           run history, rejected rows, change log, in-place upgrades
   archive.py         content-addressed, read-only copies of input files
   report/            HTML report (Jinja2, autoescaped) and JSON

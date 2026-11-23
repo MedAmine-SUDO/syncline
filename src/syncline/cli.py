@@ -17,6 +17,7 @@ from syncline.engine import ReplayError, RunResult, preview_changes
 from syncline.engine import replay as replay_run
 from syncline.engine import run as run_flow
 from syncline.entities import ENTITIES, Entity, custom_entity
+from syncline.hooks import HookError, Hooks
 from syncline.io.read import SourceError, read_file
 from syncline.mapping.apply import MappingError
 from syncline.mapping.draft import draft_flow
@@ -75,9 +76,11 @@ def validate(flow: Annotated[Path, typer.Argument(help="Flow file (.yaml)")]) ->
     """Check a flow file without running it."""
     try:
         spec = load_flow(flow)
-    except SpecError as e:
-        _print_spec_error(e)
-        raise typer.Exit(EXIT_CONFIG) from None
+        Hooks.load(
+            spec.hooks.configured(), flow.parent
+        )  # hook files exist and their functions import
+    except Exception as e:
+        _fail(e)
     out.print(
         f"[bold green]✓ {flow}[/] is valid: flow [bold]{spec.flow}[/], "
         f"{len(spec.mapping)} fields, key {', '.join(spec.load.key)}, "
@@ -229,7 +232,7 @@ def _fail(e: Exception) -> NoReturn:
     if isinstance(e, SpecError):
         _print_spec_error(e)
         raise typer.Exit(EXIT_CONFIG) from None
-    if isinstance(e, SourceError | MappingError | ArchiveError | ReplayError):
+    if isinstance(e, SourceError | MappingError | ArchiveError | ReplayError | HookError):
         err.print(f"[bold red]✗[/] {e}")
         raise typer.Exit(EXIT_CONFIG) from None
     if isinstance(e, TargetError):

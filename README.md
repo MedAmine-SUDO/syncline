@@ -61,6 +61,9 @@ Every B2B product that imports customer data ends up with the same pile of scrip
 ### 📥 Reads real-world files
 CSV or Excel. Encoding (UTF-8, BOM, Windows-1252) and delimiter (`,` `;` tab `|`) are detected. Every value is read as text first, so `00123` stays `00123`.
 
+### 🪝 Hooks, not forks
+A customer needs something special? A Python function next to their flow (`after_read`, `after_map`). The engine checks what it returns: no lost rows, no changed types.
+
 ### ✅ Data contracts
 Required fields, allowed values, unique keys and a maximum share of rejected rows. Duplicates reject **every** copy: the engine won't guess which one is right.
 
@@ -220,7 +223,7 @@ Things the tests didn't catch at first, found by running the demo end to end and
 - [ ] SFTP and S3 sources, a REST API target (the [LearnHub](https://github.com/MedAmine-SUDO/learnhub-mcp-server) mock LMS first)
 - [x] Per-field update policies (`always`, `if_empty`, `never`); updates write only what changed
 - [ ] Lifecycle rules (allowed status transitions per entity)
-- [ ] Hooks for customer-specific logic, without forking the engine
+- [x] Hooks for customer-specific logic, without forking the engine
 - [x] Raw-file archive and `syncline replay` (same bytes, current rules)
 - [ ] A scheduler and a small UI for many customers at once
 - [ ] An optional LLM provider behind the same interface as the offline matcher

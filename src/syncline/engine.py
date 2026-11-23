@@ -10,8 +10,8 @@ Every run ends with exactly one record in the run history, whatever happened:
 | `rejected` | too many invalid rows (contract)                                | untouched|
 | `guarded`  | changes too large (mass-change guard)                           | untouched|
 
-Problems with the flow file, the source or the target raise exceptions instead
-(SpecError, SourceError, MappingError, TargetError); nothing is written when they do.
+Problems with the flow file, the source, a hook or the target raise exceptions instead
+(SpecError, SourceError, MappingError, HookError, TargetError); nothing is written when they do.
 """
 
 from __future__ import annotations
@@ -24,8 +24,9 @@ from typing import Any
 from syncline.archive import Archive
 from syncline.contract import Checked, ContractFailure, check
 from syncline.diff import CHANGED, Diff, compute
+from syncline.hooks import HookContext, Hooks, Stage
 from syncline.io.read import ROW, ReadResult, find_file, read_file
-from syncline.mapping.apply import apply_mapping
+from syncline.mapping.apply import Mapped, apply_mapping
 from syncline.spec import FlowSpec, Guard, load_flow
 from syncline.state import RunRecord, State, now
 from syncline.targets.sql import SqlTable
@@ -138,6 +139,7 @@ def run(
             base["message"] = f"{note}; {base['message']}" if base["message"] else note
         return RunRecord(**base)
 
+    hooks = Hooks.load(spec.hooks.configured(), flow_path.parent)
     path = find_file(spec.source, flow_path.parent, file)
     read = read_file(path, spec.source)
     kept = archive.store(spec.flow, path, read.sha256) if archive else None
@@ -152,7 +154,12 @@ def run(
         state.save(rec)
         return RunResult(record=rec, spec=spec, read=read)
 
-    mapped = apply_mapping(read.df, spec.mapping)
+    def ctx(stage: Stage) -> HookContext:
+        return HookContext(spec.flow, spec.entity, path, run_id, dry_run, stage)
+
+    text = hooks.run("after_read", read.df, ctx("after_read"))
+    mapped = apply_mapping(text, spec.mapping)
+    mapped = Mapped(df=hooks.run("after_map", mapped.df, ctx("after_map")), errors=mapped.errors)
     try:
         checked = check(mapped, spec.contract)
     except ContractFailure as e:

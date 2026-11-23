@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 FieldType = Literal["string", "int", "float", "bool", "date", "email"]
 TransformName = Literal["trim", "lower", "upper", "title", "collapse_spaces", "digits_only"]
 UpdatePolicy = Literal["always", "if_empty", "never"]
+HookStage = Literal["after_read", "after_map"]
 Scalar = str | int | float | bool
 
 _FLOW_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -123,6 +124,20 @@ class Load(_Strict):
         return self
 
 
+_HOOK_REF = r"^[^:]+\.py:[A-Za-z_][A-Za-z0-9_]*$"
+
+
+class HookRefs(_Strict):
+    """Python functions run at fixed points: `path/to/file.py:function`, relative to the flow."""
+
+    after_read: Annotated[str, Field(pattern=_HOOK_REF)] | None = None
+    after_map: Annotated[str, Field(pattern=_HOOK_REF)] | None = None
+
+    def configured(self) -> dict[HookStage, str]:
+        stages: tuple[HookStage, ...] = ("after_read", "after_map")
+        return {s: ref for s in stages if (ref := getattr(self, s))}
+
+
 class FlowSpec(_Strict):
     flow: str
     entity: str
@@ -130,6 +145,7 @@ class FlowSpec(_Strict):
     mapping: dict[str, FieldMapping] = Field(min_length=1)
     contract: Contract = Field(default_factory=Contract)
     load: Load
+    hooks: HookRefs = Field(default_factory=HookRefs)
 
     @field_validator("flow")
     @classmethod

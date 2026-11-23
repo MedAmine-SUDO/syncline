@@ -14,6 +14,7 @@ source: { ... }             # required
 mapping: { ... }            # required, at least one field
 contract: { ... }           # optional (defaults below)
 load: { ... }               # required
+hooks: { ... }              # optional
 ```
 
 ## `flow`
@@ -128,3 +129,40 @@ A stopped run writes nothing and exits with code 4. If the change is real, run a
 primary key). If it exists, it must have every mapped column; other columns are left alone.
 A record that comes back after being deactivated is reactivated by the normal diff, as long as the flow
 sets the field back (for example `status: { default: active }`).
+
+## `hooks`
+
+A customer's own logic, in a Python file next to the flow, without forking the engine.
+
+```yaml
+hooks:
+  after_read: hooks/acme.py:job_titles      # the text table, before mapping
+  after_map: hooks/acme.py:fix_managers     # the typed table, before the contract
+```
+
+A hook is `path/to/file.py:function`, relative to the flow file:
+
+```python
+import polars as pl
+from syncline.hooks import HookContext
+
+def job_titles(df: pl.DataFrame, ctx: HookContext) -> pl.DataFrame:
+    clean = pl.col("Poste").str.replace_all(r"\((e|ne)\)", "").str.strip_chars()
+    return df.with_columns(clean.alias("Poste (clean)"))   # then map job_title from it
+```
+
+`ctx` carries `flow`, `entity`, `file`, `run_id`, `dry_run` and `stage`.
+
+| Stage | Receives | May |
+|---|---|---|
+| `after_read` | every column as text, plus `__row` | change values, add or rename columns (they're turned back into text) |
+| `after_map` | the mapped, typed fields, plus `__row` | change values; columns and types must stay the same |
+
+Every hook must **keep every row and add none** (`__row` must hold the same line numbers). A dropped row
+would look absent from a full snapshot and deactivate a real record; to leave rows out, let the contract
+reject them, where they're visible in the report. A hook that raises, returns something other than a
+DataFrame or breaks a rule stops the run before anything is written (exit code 1), with the hook's name in
+the message. `syncline validate` imports the hook files, so a missing file or function is caught early.
+
+Hooks run as normal Python with your permissions, like any plugin: only use flow files and hook files you trust.
+See `examples/acme/acme_users_with_hooks.yaml`.

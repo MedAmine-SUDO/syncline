@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Hooks: `hooks: {after_read, after_map}` run Python functions next to the flow; the engine checks that
+  every row is kept and (after mapping) that columns and types are unchanged. `syncline validate` imports them.
+  Example: `examples/acme/acme_users_with_hooks.yaml`.
+
 - Raw-file archive: every input file is kept, read-only, by content hash (`--archive`, `SYNCLINE_ARCHIVE`,
   `--no-archive`); runs record the flow file and the archived file.
 - `syncline replay RUN_ID`: re-run a past run's archived file through the flow's current configuration;

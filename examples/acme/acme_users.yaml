@@ -1,0 +1,27 @@
+# Acme Corp (fictional) sends its HR export as a CSV with French headers.
+flow: acme_users
+entity: user
+source:
+  type: file
+  path: employes_*.csv  # relative to this flow file; the last match by name is used
+mapping:
+  external_id: { from: Matricule, transform: [trim] }
+  first_name: { from: Prénom, transform: [trim, title] }
+  last_name: { from: Nom, transform: [trim, title] }
+  email: { from: E-mail, type: email, transform: [trim, lower] }
+  department:
+    from: Service
+    transform: [trim]
+    values: { Ventes: Sales, Ingénierie: Engineering, RH: HR, Finances: Finance }
+    default: Unassigned
+  hire_date: { from: "Date d'entrée", type: date, format: "%d/%m/%Y" }
+  status: { default: active }  # constant: every row in the file is active
+contract:
+  required: [external_id, email, first_name, last_name]
+  unique: [external_id, email]
+  max_rejected_ratio: 0.05
+load:
+  target: { type: sql, url: "env:APP_DB_URL", table: users }
+  key: [external_id]
+  mode: full_snapshot
+  deactivate: { set: { status: inactive } }

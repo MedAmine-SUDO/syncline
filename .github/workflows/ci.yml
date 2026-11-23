@@ -42,7 +42,7 @@ jobs:
           docker run -d -p 2222:22 -v /tmp/sftp-out:/home/acme/outgoing:ro \
             atmoz/sftp:alpine acme:acme-test-pw:1001
           for i in $(seq 1 30); do
-            ssh-keyscan -p 2222 127.0.0.1 > /tmp/sftp_known_hosts 2>/dev/null
+            ssh-keyscan -p 2222 127.0.0.1 > /tmp/sftp_known_hosts 2>/dev/null || true
             [ -s /tmp/sftp_known_hosts ] && break; sleep 1
           done
           test -s /tmp/sftp_known_hosts

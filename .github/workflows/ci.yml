@@ -6,17 +6,57 @@ on:
 
 jobs:
   test:
+    name: tests (python ${{ matrix.python }})
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python: ["3.12", "3.13"]
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      SYNCLINE_TEST_PG_URL: postgresql+psycopg://postgres:postgres@localhost:5432/postgres
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: ${{ matrix.python }}
       - run: uv sync --locked --all-extras
-      - run: uv run ruff check
-      - run: uv run ruff format --check
-      - run: uv run mypy
-      - run: uv run pytest -q
+      - name: Lint
+        run: |
+          uv run ruff check
+          uv run ruff format --check
+      - name: Types
+        run: uv run mypy
+      - name: Tests (SQLite + Postgres), coverage >= 90%
+        run: uv run pytest -q --cov
+
+  install:
+    name: clean install + demo
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv build
+      - name: Install the wheel in a fresh venv and run the demo
+        run: |
+          uv venv /tmp/clean
+          uv pip install --python /tmp/clean/bin/python dist/*.whl
+          export PATH=/tmp/clean/bin:$PATH APP_DB_URL=sqlite:////tmp/app.db
+          cd examples/acme
+          syncline --version
+          syncline validate acme_users.yaml
+          syncline map employes_2026-11-01.csv --flow acme_users -o /tmp/draft.yaml
+          syncline validate /tmp/draft.yaml
+          syncline run acme_users.yaml -f employes_2026-11-01.csv --state /tmp/s.db
+          syncline run acme_users.yaml --state /tmp/s.db --report-dir /tmp/reports
+          test -n "$(ls /tmp/reports/*.html)"

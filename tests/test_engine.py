@@ -1,25 +1,11 @@
 """The demo scenario, end to end, on freshly generated example files."""
 
-import shutil
-import subprocess
-import sys
 from pathlib import Path
 
-import pytest
-
-from syncline.engine import run
+from syncline.diff import compute
+from syncline.engine import change_log, guard_violations, run
+from syncline.spec import Guard
 from syncline.state import State
-
-ROOT = Path(__file__).parent.parent
-
-
-@pytest.fixture
-def acme(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    d = tmp_path / "acme"
-    subprocess.run([sys.executable, str(ROOT / "scripts" / "make_examples.py"), str(d)], check=True)
-    shutil.copy(ROOT / "examples" / "acme" / "acme_users.yaml", d)
-    monkeypatch.setenv("APP_DB_URL", f"sqlite:///{tmp_path / 'app.db'}")
-    return d
 
 
 def test_demo_scenario(acme: Path, tmp_path: Path) -> None:
@@ -53,3 +39,57 @@ def test_too_many_rejections_load_nothing(acme: Path, tmp_path: Path) -> None:
     res = run(flow, state=State(tmp_path / "state.db"))
     assert res.status == "rejected"
     assert res.diff is None  # stopped before the target was touched
+
+
+def test_guard_stops_a_truncated_file(
+    acme: Path, day1: Path, truncated: Path, tmp_path: Path
+) -> None:
+    flow, state = acme / "acme_users.yaml", State(tmp_path / "state.db")
+    run(flow, file=day1, state=state)
+
+    stopped = run(flow, file=truncated, state=state)
+    assert stopped.status == "guarded"
+    assert stopped.record.message and "above the limit of 20%" in stopped.record.message
+    assert state.last_ok("acme_users").sha256 != stopped.record.sha256  # type: ignore[union-attr]
+
+    preview = run(flow, file=truncated, dry_run=True, state=state)
+    assert preview.status == "dry_run" and preview.warnings  # a dry run warns, doesn't stop
+
+    forced = run(flow, file=truncated, allow_mass_change=True, state=state)
+    assert forced.status == "ok" and forced.record.deactivated > 100
+
+
+def test_guard_ratios() -> None:
+    import polars as pl
+
+    from syncline.io.read import ROW
+
+    cur = pl.DataFrame(
+        {"id": [str(i) for i in range(10)], "status": ["active"] * 8 + ["inactive"] * 2}
+    )
+    new = pl.DataFrame({"id": ["0", "1", "2", "3", "4"], "status": ["active"] * 5}).with_row_index(
+        ROW
+    )
+    d = compute(new, cur, ["id"], {"status": "inactive"})
+    assert d.counts()["deactivate"] == 3 and d.already_inactive == 2
+    # 3 of the 8 active records (37%): the 2 already inactive don't count
+    assert guard_violations(d, cur.height, Guard()) == [
+        "would deactivate 3 of 8 records (38%), above the limit of 20%"
+    ]
+    assert guard_violations(d, cur.height, Guard(max_deactivate_ratio=0.5)) == []
+    assert guard_violations(d, 0, Guard()) == []  # first load
+    upd = compute(new.with_columns(pl.lit("x").alias("status")), cur, ["id"], None)
+    assert guard_violations(upd, cur.height, Guard(max_update_ratio=0.1))
+
+
+def test_change_log_records_old_and_new(acme: Path, day1: Path, tmp_path: Path) -> None:
+    flow, state = acme / "acme_users.yaml", State(tmp_path / "state.db")
+    run(flow, file=day1, state=state)
+    res = run(flow, state=state)
+    assert res.diff is not None
+    log = change_log(res.diff)
+    assert [c["action"] for c in log].count("deactivate") == 4
+    upd = next(c for c in log if c["action"] == "update")
+    assert set(upd["detail"]) == {"department"} and len(upd["detail"]["department"]) == 2
+    stored = state.changes(res.record.id)
+    assert len(stored) == 12 and stored[0]["key"]  # 6 + 2 + 4, kept in the run history

@@ -10,3 +10,6 @@ build/
 *.db
 reports/
 .env
+.coverage
+coverage.xml
+htmlcov/

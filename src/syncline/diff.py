@@ -24,6 +24,7 @@ class Diff:
     deactivate: pl.DataFrame  # target keys absent from the file (full snapshot only)
     unchanged: int
     deactivate_set: dict[str, Scalar] = field(default_factory=dict)
+    already_inactive: int = 0  # target records absent from the file and already deactivated
 
     @property
     def is_empty(self) -> bool:
@@ -90,9 +91,11 @@ def compute(
             ]
         )
         deactivate = gone.filter(~already).select(key)
-        unchanged += gone.height - deactivate.height
+        already_inactive = gone.height - deactivate.height
+        unchanged += already_inactive
     else:
         deactivate = current.select(key).clear()
+        already_inactive = 0
 
     return Diff(
         key=key,
@@ -101,4 +104,5 @@ def compute(
         deactivate=deactivate.sort(key),
         unchanged=unchanged,
         deactivate_set=dict(deactivate_set or {}),
+        already_inactive=already_inactive,
     )

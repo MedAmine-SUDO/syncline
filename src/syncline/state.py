@@ -44,6 +44,15 @@ rejected_rows = sa.Table(
     sa.Column("reasons", sa.Text, nullable=False),  # JSON list
     sa.Column("source_values", sa.Text, nullable=False),  # JSON object, as read from the file
 )
+changes = sa.Table(
+    "changes",
+    _meta,
+    sa.Column("run_id", sa.String, sa.ForeignKey("runs.id"), primary_key=True),
+    sa.Column("seq", sa.Integer, primary_key=True),
+    sa.Column("action", sa.String, nullable=False),  # create | update | deactivate
+    sa.Column("record_key", sa.Text, nullable=False),  # JSON object: key field -> value
+    sa.Column("detail", sa.Text, nullable=False),  # JSON: values, {field: [old, new]} or set
+)
 
 
 @dataclass(frozen=True)
@@ -75,9 +84,29 @@ class State:
         self.engine = sa.create_engine(f"sqlite:///{path}")
         _meta.create_all(self.engine)
 
-    def save(self, record: RunRecord, rejected: list[dict[str, Any]] | None = None) -> None:
+    def save(
+        self,
+        record: RunRecord,
+        rejected: list[dict[str, Any]] | None = None,
+        change_log: list[dict[str, Any]] | None = None,
+    ) -> None:
+        """Store a run, its rejected rows and its changes (applied, or previewed by a dry run)."""
         with self.engine.begin() as conn:
             conn.execute(runs.insert(), [record.__dict__])
+            if change_log:
+                conn.execute(
+                    changes.insert(),
+                    [
+                        {
+                            "run_id": record.id,
+                            "seq": i,
+                            "action": c["action"],
+                            "record_key": _dumps(c["key"]),
+                            "detail": _dumps(c["detail"]),
+                        }
+                        for i, c in enumerate(change_log)
+                    ],
+                )
             if rejected:
                 conn.execute(
                     rejected_rows.insert(),
@@ -112,6 +141,25 @@ class State:
         with self.engine.connect() as conn:
             return [RunRecord(**r) for r in conn.execute(stmt).mappings()]
 
+    def changes(self, run_id: str) -> list[dict[str, Any]]:
+        stmt = sa.select(changes).where(changes.c.run_id == run_id).order_by(changes.c.seq)
+        with self.engine.connect() as conn:
+            return [
+                {
+                    "action": r["action"],
+                    "key": json.loads(r["record_key"]),
+                    "detail": json.loads(r["detail"]),
+                }
+                for r in conn.execute(stmt).mappings()
+            ]
+
+    def find(self, run_id: str) -> RunRecord | None:
+        """A run by id, or by a unique prefix of its id."""
+        stmt = sa.select(runs).where(runs.c.id.startswith(run_id, autoescape=True)).limit(2)
+        with self.engine.connect() as conn:
+            rows = list(conn.execute(stmt).mappings())
+        return RunRecord(**rows[0]) if len(rows) == 1 else None
+
     def get(self, run_id: str) -> tuple[RunRecord, list[dict[str, Any]]] | None:
         with self.engine.connect() as conn:
             row = conn.execute(sa.select(runs).where(runs.c.id == run_id)).mappings().first()
@@ -131,3 +179,7 @@ class State:
                 for r in rej
             ]
         return RunRecord(**row), rejected
+
+
+def _dumps(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, default=str)

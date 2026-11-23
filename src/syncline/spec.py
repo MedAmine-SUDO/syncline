@@ -87,11 +87,24 @@ class Deactivate(_Strict):
         return v
 
 
+class Guard(_Strict):
+    """Stop a run whose changes are suspiciously large, before anything is written.
+
+    A file that would deactivate a third of the company is far more often a truncated
+    export than a real event. Ratios are relative to the records already in the target.
+    Override once with `syncline run --allow-mass-change`.
+    """
+
+    max_deactivate_ratio: Annotated[float, Field(ge=0, le=1)] = 0.2
+    max_update_ratio: Annotated[float, Field(ge=0, le=1)] | None = None
+
+
 class Load(_Strict):
     target: SqlTarget
     key: list[str] = Field(min_length=1)
     mode: Literal["full_snapshot", "incremental"] = "full_snapshot"
     deactivate: Deactivate | None = None
+    guard: Guard = Field(default_factory=Guard)
 
     @model_validator(mode="after")
     def _check(self) -> Load:

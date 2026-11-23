@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Annotated
 
@@ -18,6 +19,7 @@ from syncline.io.read import SourceError, read_file
 from syncline.mapping.apply import MappingError
 from syncline.mapping.draft import draft_flow
 from syncline.mapping.suggest import REVIEW, SAMPLE_ROWS, OfflineMatcher
+from syncline.report.html import ReportError, render_html, render_json, write_report
 from syncline.spec import FileSource, SpecError, json_schema, load_flow
 from syncline.state import DEFAULT_STATE, State
 from syncline.targets.sql import TargetError
@@ -33,6 +35,7 @@ err = Console(stderr=True)
 EXIT_CONFIG = 1  # flow file, source file or mapping problem
 EXIT_CONTRACT = 2  # too many rejected rows: nothing loaded
 EXIT_TARGET = 3  # target unreachable or doesn't match
+EXIT_GUARD = 4  # changes too large: nothing written
 
 StateOpt = Annotated[Path, typer.Option("--state", help="Run history database.")]
 
@@ -90,7 +93,7 @@ def _summary(res: RunResult, max_rejected: int = 10) -> None:
         return
 
     if res.diff is not None:
-        verb = "Would" if rec.status == "dry_run" else "Done:"
+        verb = "Would" if rec.status in ("dry_run", "guarded") else "Done:"
         c = res.diff.counts()
         out.print(
             f"[bold]{verb}[/] create [green]{c['create']}[/], update [cyan]{c['update']}[/], "
@@ -112,8 +115,15 @@ def _summary(res: RunResult, max_rejected: int = 10) -> None:
         if len(res.rejected) > max_rejected:
             out.print(f"  [dim]… and {len(res.rejected) - max_rejected} more[/]")
 
+    for w in res.warnings:
+        out.print(f"[bold yellow]! {w}[/]")
     if rec.status == "rejected":
         err.print(f"[bold red]✗ run stopped, nothing loaded[/]: {rec.message}")
+    elif rec.status == "guarded":
+        err.print(
+            f"[bold red]✗ run stopped by the mass-change guard, nothing written[/]: {rec.message}\n"
+            "  If this is expected, run again with --allow-mass-change."
+        )
     elif rec.status == "dry_run":
         out.print("[yellow]Dry run: nothing written.[/]")
     out.print(f"[dim]run {rec.id}[/]")
@@ -131,11 +141,30 @@ def run(
     force: Annotated[
         bool, typer.Option("--force", help="Run even if this file was already loaded.")
     ] = False,
+    allow_mass_change: Annotated[
+        bool,
+        typer.Option("--allow-mass-change", help="Apply even if the guard limits are exceeded."),
+    ] = False,
+    report_dir: Annotated[
+        Path | None,
+        typer.Option("--report-dir", help="Write the HTML report here (default: no report)."),
+    ] = None,
+    as_json: Annotated[
+        bool, typer.Option("--json", help="Print a JSON summary instead (for schedulers).")
+    ] = False,
     state: StateOpt = DEFAULT_STATE,
 ) -> None:
-    """Run a flow: read, map, check, diff, then load (unless --dry-run)."""
+    """Run a flow: read, map, check, diff, then load (unless --dry-run).
+
+    Exit codes: 0 done, 1 flow/source problem, 2 too many invalid rows,
+    3 target problem, 4 stopped by the mass-change guard.
+    """
+    store = State(state)
     try:
-        res = run_flow(flow, file=file, dry_run=dry_run, force=force, state=State(state))
+        res = run_flow(
+            flow, file=file, dry_run=dry_run, force=force,
+            allow_mass_change=allow_mass_change, state=store,
+        )  # fmt: skip
     except SpecError as e:
         _print_spec_error(e)
         raise typer.Exit(EXIT_CONFIG) from None
@@ -145,9 +174,41 @@ def run(
     except TargetError as e:
         err.print(f"[bold red]✗ target:[/] {e}")
         raise typer.Exit(EXIT_TARGET) from None
-    _summary(res)
+    report = write_report(store, res.record.id, report_dir) if report_dir else None
+    if as_json:
+        summary = {**res.record.__dict__, "warnings": res.warnings}
+        summary["report"] = str(report) if report else None
+        print(json.dumps(summary, default=str, ensure_ascii=False))
+    else:
+        _summary(res)
+        if report:
+            out.print(f"[dim]report[/] {report}")
     if res.status == "rejected":
         raise typer.Exit(EXIT_CONTRACT)
+    if res.status == "guarded":
+        raise typer.Exit(EXIT_GUARD)
+
+
+@app.command()
+def report(
+    run_id: Annotated[str, typer.Argument(help="Run id, or a unique start of it.")],
+    output: Annotated[
+        Path | None, typer.Option("--output", "-o", help="Write here instead of stdout.")
+    ] = None,
+    as_json: Annotated[bool, typer.Option("--json", help="Full run detail as JSON.")] = False,
+    state: StateOpt = DEFAULT_STATE,
+) -> None:
+    """Rebuild the report of a past run from the run history."""
+    try:
+        text = render_json(State(state), run_id) if as_json else render_html(State(state), run_id)
+    except ReportError as e:
+        err.print(f"[bold red]✗[/] {e}")
+        raise typer.Exit(EXIT_CONFIG) from None
+    if output is None:
+        print(text)
+    else:
+        output.write_text(text, encoding="utf-8")
+        err.print(f"[bold green]✓[/] wrote {output}")
 
 
 @app.command()
@@ -160,7 +221,9 @@ def runs(
     t = Table(header_style="dim")
     for col in ("run", "flow", "status", "file", "+", "~", "-", "=", "rejected"):
         t.add_column(col, justify="right" if col in "+~-=rejected" else "left")
-    colors = {"ok": "green", "dry_run": "yellow", "skipped": "dim", "rejected": "red"}
+    colors = {
+        "ok": "green", "dry_run": "yellow", "skipped": "dim", "rejected": "red", "guarded": "red",
+    }  # fmt: skip
     for r in State(state).history(flow, limit):
         t.add_row(
             r.id, r.flow, f"[{colors.get(r.status, 'white')}]{r.status}[/]",
@@ -242,7 +305,5 @@ def map_columns(
 
 
 def _slug(text: str) -> str:
-    import re
-
     slug = re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
     return slug if slug and slug[0].isalpha() else f"f_{slug}"

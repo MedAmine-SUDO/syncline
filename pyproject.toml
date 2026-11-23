@@ -1,6 +1,6 @@
 [project]
 name = "syncline"
-version = "0.0.1"
+version = "0.1.0"
 description = "Describe a data sync in a YAML file instead of writing a script: messy customer files in, clean upserts out, with a dry-run diff and a readable rejected-rows report."
 readme = "README.md"
 license = "MIT"
@@ -9,7 +9,7 @@ authors = [{ name = "MedAmine-SUDO" }]
 requires-python = ">=3.12"
 keywords = ["data sync", "etl", "csv", "data contracts", "upsert", "polars", "hr data"]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 3 - Alpha",
     "Environment :: Console",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3.12",
@@ -21,10 +21,17 @@ dependencies = [
     "polars>=1.0",
     "pydantic>=2.7",
     "pyyaml>=6.0",
+    "jinja2>=3.1",
     "rich>=13.7",
     "sqlalchemy>=2.0",
     "typer>=0.12",
 ]
+
+[project.urls]
+Homepage = "https://github.com/MedAmine-SUDO/syncline"
+Source = "https://github.com/MedAmine-SUDO/syncline"
+Issues = "https://github.com/MedAmine-SUDO/syncline/issues"
+Changelog = "https://github.com/MedAmine-SUDO/syncline/blob/main/CHANGELOG.md"
 
 [project.scripts]
 syncline = "syncline.cli:app"
@@ -40,8 +47,10 @@ dev = [
     "mypy>=1.10",
     "pre-commit>=3.7",
     "pytest>=8.2",
+    "pytest-cov>=5.0",
     "ruff>=0.6",
     "types-pyyaml>=6.0",
+    "xlsxwriter>=3.2",
 ]
 
 [build-system]
@@ -61,3 +70,13 @@ files = ["src/syncline"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["syncline"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 90
+exclude_also = ["if TYPE_CHECKING:", "raise ValueError\\(f\"unknown", "\\.\\.\\."]

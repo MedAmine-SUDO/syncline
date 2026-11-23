@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ run.flow }} · run {{ run.id }}</title>
+<style>
+  :root { --ink:#15212e; --muted:#5a6878; --line:#d9e0e7; --bg:#f6f8fa; --ok:#1f7a4d; --warn:#a15c00; --bad:#b42318; --accent:#2456c8; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--ink); background: var(--bg); }
+  main { max-width: 1100px; margin: 0 auto; padding: 32px 20px 48px; }
+  h1 { font-size: 1.6rem; margin: 0 0 4px; }
+  h2 { font-size: 1.15rem; margin: 32px 0 8px; }
+  p { margin: 4px 0; }
+  .meta { color: var(--muted); font-size: .9rem; }
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: .8rem; font-weight: 600; color: #fff; vertical-align: middle; }
+  .s-ok { background: var(--ok); } .s-dry_run { background: var(--accent); } .s-skipped { background: var(--muted); }
+  .s-rejected, .s-guarded { background: var(--bad); }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin: 20px 0; }
+  .tile { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+  .tile b { display: block; font-size: 1.6rem; line-height: 1.1; }
+  .tile span { color: var(--muted); font-size: .85rem; }
+  .note { background: #fff4e5; border: 1px solid #f5c98a; border-radius: 8px; padding: 10px 14px; margin: 12px 0; }
+  .note.bad { background: #fdecea; border-color: #f2b8b5; }
+  .wrap { overflow-x: auto; background: #fff; border: 1px solid var(--line); border-radius: 8px; }
+  table { border-collapse: collapse; width: 100%; font-size: .88rem; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); vertical-align: top; white-space: nowrap; }
+  th { background: #fafbfc; color: var(--muted); font-weight: 600; position: sticky; top: 0; }
+  td.reasons { white-space: normal; min-width: 240px; color: var(--bad); }
+  td.num { text-align: right; color: var(--muted); }
+  .old { color: var(--muted); text-decoration: line-through; }
+  .empty { color: var(--muted); font-style: italic; }
+  footer { margin-top: 40px; color: var(--muted); font-size: .8rem; }
+  @media print { body { background: #fff; } .wrap { overflow: visible; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>{{ run.flow }} <span class="badge s-{{ run.status }}">{{ status_label }}</span></h1>
+  <p class="meta">Run {{ run.id }} · {{ run.started_at.strftime("%Y-%m-%d %H:%M UTC") }}{% if file_name %} · file <b>{{ file_name }}</b>{% endif %}{% if run.sha256 %} · sha256 {{ run.sha256[:12] }}{% endif %}</p>
+
+  {% if run.message %}<div class="note{% if run.status in ('rejected', 'guarded') %} bad{% endif %}">{{ run.message }}</div>{% endif %}
+
+  <div class="tiles">
+    <div class="tile"><b>{{ run.total }}</b><span>rows in the file</span></div>
+    <div class="tile"><b>{{ run.created }}</b><span>{{ verb }}created</span></div>
+    <div class="tile"><b>{{ run.updated }}</b><span>{{ verb }}updated</span></div>
+    <div class="tile"><b>{{ run.deactivated }}</b><span>{{ verb }}deactivated</span></div>
+    <div class="tile"><b>{{ run.unchanged }}</b><span>unchanged</span></div>
+    <div class="tile"><b>{{ run.rejected }}</b><span>rows not loaded</span></div>
+  </div>
+
+  <h2>Rows we couldn't load ({{ rejected | length }})</h2>
+  {% if rejected %}
+  <p class="meta">These rows were left out. Fixing them in the next export is enough: they'll be picked up automatically. Row numbers are line numbers in the file (line 1 is the header).</p>
+  <div class="wrap"><table>
+    <tr><th>Row</th><th>Why</th>{% for c in source_columns %}<th>{{ c }}</th>{% endfor %}</tr>
+    {% for r in rejected %}
+    <tr><td class="num">{{ r.row }}</td><td class="reasons">{{ r.reasons | join("; ") }}</td>{% for c in source_columns %}<td>{% if r["values"][c] is none %}<span class="empty">empty</span>{% else %}{{ r["values"][c] }}{% endif %}</td>{% endfor %}</tr>
+    {% endfor %}
+  </table></div>
+  {% else %}<p class="empty">None: every row was valid.</p>{% endif %}
+
+  {% for section in sections %}
+  <h2>{{ section.title }} ({{ section.total }})</h2>
+  {% if section.rows %}
+  <div class="wrap"><table>
+    <tr>{% for k in key %}<th>{{ k }}</th>{% endfor %}<th>{{ section.detail_label }}</th></tr>
+    {% for c in section.rows %}
+    <tr>{% for k in key %}<td>{{ c.key[k] }}</td>{% endfor %}<td>
+      {%- if c.action == "update" -%}
+        {% for f, pair in c.detail.items() %}{{ f }}: <span class="old">{{ pair[0] if pair[0] is not none else "empty" }}</span> → {{ pair[1] if pair[1] is not none else "empty" }}{% if not loop.last %}; {% endif %}{% endfor %}
+      {%- else -%}
+        {% for f, v in c.detail.items() %}{{ f }}: {{ v if v is not none else "empty" }}{% if not loop.last %} · {% endif %}{% endfor %}
+      {%- endif -%}
+    </td></tr>
+    {% endfor %}
+  </table></div>
+  {% if section.total > section.rows | length %}<p class="meta">Showing the first {{ section.rows | length }} of {{ section.total }}. The full list is in the run history (<code>syncline report {{ run.id }} --json</code>).</p>{% endif %}
+  {% else %}<p class="empty">None.</p>{% endif %}
+  {% endfor %}
+
+  <footer>Generated by syncline {{ version }}. Values shown as they were in the file; nothing in this report is sent anywhere.</footer>
+</main>
+</body>
+</html>

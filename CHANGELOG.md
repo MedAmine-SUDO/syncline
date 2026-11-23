@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 (2026-11-23)
+
+Sources and targets beyond files and databases.
 
 - REST target (`load.target.type: rest`, extra `syncline[rest]`): any JSON API. Paginated reads (page or
   cursor), creates and updates one record at a time (`PATCH`/`POST` send only what changed, `PUT` keeps

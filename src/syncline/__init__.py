@@ -1,3 +1,3 @@
 """Syncline: describe a data sync in a YAML file instead of writing a script."""
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"

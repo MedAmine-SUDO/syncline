@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 FieldType = Literal["string", "int", "float", "bool", "date", "email"]
 TransformName = Literal["trim", "lower", "upper", "title", "collapse_spaces", "digits_only"]
+UpdatePolicy = Literal["always", "if_empty", "never"]
 Scalar = str | int | float | bool
 
 _FLOW_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -49,6 +50,9 @@ class FieldMapping(_Strict):
     transform: list[TransformName] = Field(default_factory=list)
     values: dict[str, Scalar] = Field(default_factory=dict)  # value map, applied after transforms
     default: Scalar | None = None
+    # When an existing record may be changed: always (default), if_empty (only fill a
+    # blank value in the target), never (set on create only; the application owns it).
+    update: UpdatePolicy = "always"
 
     @model_validator(mode="after")
     def _check(self) -> FieldMapping:
@@ -157,6 +161,12 @@ class FlowSpec(_Strict):
                 problems.append(f"{where}: {', '.join(unknown)} not in mapping")
         if problems:
             raise ValueError("; ".join(problems))
+        policy_on_key = [k for k in self.load.key if self.mapping[k].update != "always"]
+        if policy_on_key:
+            raise ValueError(
+                f"key fields can't have an update policy (records are matched on them): "
+                f"{', '.join(policy_on_key)}"
+            )
         optional_keys = [k for k in self.load.key if k not in self.contract.required]
         if optional_keys:
             raise ValueError(

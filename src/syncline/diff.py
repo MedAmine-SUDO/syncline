@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 import polars as pl
 
 from syncline.io.read import ROW
-from syncline.spec import Scalar
+from syncline.spec import Scalar, UpdatePolicy
 
 CHANGED = "__changed"  # list of field names that differ, on update rows
 
@@ -39,19 +39,37 @@ class Diff:
         }
 
 
+def _changed(field: str, policy: UpdatePolicy) -> pl.Expr:
+    new, old = pl.col(field), pl.col(f"old_{field}")
+    match policy:
+        case "always":
+            return new.ne_missing(old)
+        case "if_empty":
+            return old.is_null() & new.is_not_null()
+        case "never":
+            return pl.lit(False)
+    raise ValueError(f"unknown update policy {policy}")  # unreachable: validated by the spec
+
+
 def compute(
     incoming: pl.DataFrame,
     current: pl.DataFrame,
     key: list[str],
     deactivate_set: dict[str, Scalar] | None = None,
     present: pl.DataFrame | None = None,
+    policies: dict[str, UpdatePolicy] | None = None,
 ) -> Diff:
     """incoming: valid rows (ROW + fields). current: target rows (key + same fields).
 
     present: every key found in the file, rejected rows included. A record whose row
     was rejected is still in the file, so it is never deactivated: a bad row must not
     switch off a real person.
+
+    policies: per-field update policy (default "always"). A field only counts as changed
+    if its policy allows the change: "if_empty" only when the target value is empty,
+    "never" not at all.
     """
+    policies = policies or {}
     fields = [c for c in incoming.columns if c not in (ROW, *key)]
     old = current.select(
         *key, *[pl.col(f).alias(f"old_{f}") for f in fields if f in current.columns]
@@ -63,7 +81,7 @@ def compute(
     create = incoming.join(current.select(key), on=key, how="anti")
     matched = incoming.join(old, on=key, how="inner")
     if fields:
-        changed_flags = [pl.col(f).ne_missing(pl.col(f"old_{f}")) for f in fields]
+        changed_flags = [_changed(f, policies.get(f, "always")) for f in fields]
         matched = matched.with_columns(
             pl.concat_list(
                 [

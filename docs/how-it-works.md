@@ -71,6 +71,14 @@ in **one transaction**. Compared with dialect-specific upserts (`ON CONFLICT`, `
 - re-running the same file writes nothing: the run is **idempotent** by construction;
 - a failure halfway rolls everything back; the target is never half-synced.
 
+### Updates touch only what changed, and only what they're allowed to
+
+Customer files are rarely the only source of truth: people fix a department or add a nickname in the
+application. Each mapped field has an update policy (`always`, `if_empty`, `never`) that decides whether a
+difference counts as a change at all. Then an update writes **only the changed fields of that row**: rows are
+grouped by the set of fields that changed, one `UPDATE` per group. Unchanged fields aren't rewritten with the
+values read a moment earlier, so an edit made in the application between the read and the write isn't lost.
+
 ### A rejected row never deactivates a record
 
 In full-snapshot mode, records missing from the file are deactivated. A record whose row is in the file but

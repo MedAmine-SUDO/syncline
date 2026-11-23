@@ -14,7 +14,7 @@ from typing import Any
 import polars as pl
 import sqlalchemy as sa
 
-from syncline.diff import Diff
+from syncline.diff import CHANGED, Diff
 from syncline.io.read import ROW
 from syncline.spec import FieldMapping, FieldType, SqlTarget
 
@@ -122,14 +122,17 @@ class SqlTable:
         with self.engine.begin() as conn:
             if not create.is_empty():
                 conn.execute(t.insert(), _records(create))
-            if not diff.update.is_empty():
-                fields = [c for c in self._writable(diff.update) if c not in key]
+            # Updates write only the fields that changed in each row, grouped by which
+            # fields changed: fields a policy protects, and edits made in the application
+            # to other fields since we read the table, are left alone.
+            for changed, rows in _by_changed_fields(diff.update):
+                fields = [f for f in changed if f in self.schema]
                 stmt = (
                     t.update()
                     .where(sa.and_(*(t.c[k] == sa.bindparam(f"_k_{k}") for k in key)))
                     .values({f: sa.bindparam(f) for f in fields})
                 )
-                upd = diff.update.select(
+                upd = rows.select(
                     *[pl.col(k).alias(f"_k_{k}") for k in key], *[pl.col(f) for f in fields]
                 )
                 conn.execute(stmt, _records(upd))
@@ -144,6 +147,15 @@ class SqlTable:
 
     def _writable(self, df: pl.DataFrame) -> list[str]:
         return [c for c in df.columns if c in self.schema]
+
+
+def _by_changed_fields(update: pl.DataFrame) -> list[tuple[list[str], pl.DataFrame]]:
+    if update.is_empty():
+        return []
+    groups = update.with_columns(pl.col(CHANGED).list.sort().alias("_set")).partition_by(
+        "_set", maintain_order=True
+    )
+    return [(g["_set"][0].to_list(), g.drop("_set")) for g in groups]
 
 
 def _records(df: pl.DataFrame) -> list[dict[str, Any]]:

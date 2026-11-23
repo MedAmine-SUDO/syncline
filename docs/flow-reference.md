@@ -63,6 +63,16 @@ mapping:
 | `transform` | `[]` | Applied in order: `trim`, `lower`, `upper`, `title`, `collapse_spaces`, `digits_only`. |
 | `values` | `{}` | Value map, applied after the transforms: `{old: new}`. Values not listed are kept. |
 | `default` | none | Used when the cell is empty, or always when there is no `from`. |
+| `update` | `always` | When an **existing** record's field may change: `always` (any difference), `if_empty` (only fill a value that is empty in the target), `never` (set on create only; the application owns it afterwards). Not allowed on key fields. |
+
+```yaml
+mapping:
+  department: { from: Service, update: if_empty }   # filled once, then people can fix it in the app
+  nickname:   { from: Surnom, update: never }       # set when the person is created, never after
+```
+
+Updates write only the fields that changed in each row. A field a policy protects is never written,
+and neither is any other unchanged field, so an edit made in the application in the meantime survives.
 
 A field needs `from` or `default` (or both). A mapped column missing from the file stops the run
 before anything is read further, with the list of columns the file does have.

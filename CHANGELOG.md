@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Per-field update policies: `update: always | if_empty | never` on mapping fields.
+- Updates write only the fields that changed in each row (grouped by changed set), so protected fields and
+  concurrent edits in the application are left alone.
+
 ## 0.1.0 (2026-11-23)
 
 First version: files in, SQL out.

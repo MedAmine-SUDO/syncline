@@ -71,7 +71,7 @@ Required fields, allowed values, unique keys and a maximum share of rejected row
 Incoming rows are compared with the target by business key. The result (create / update / deactivate / unchanged) drives the dry run, the load and the report.
 
 ### 🔁 Safe to re-run
-One transaction per run; a failure leaves the target untouched. The same file twice is skipped, and forcing it changes nothing.
+One transaction per run; a failure leaves the target untouched. The same file twice is skipped, and forcing it changes nothing. Updates write only the fields that changed, and per-field policies (`if_empty`, `never`) protect what people edit in the app.
 
 ### 🧾 Audit trail and reports
 Every change is stored with its old and new values. Any run's HTML report can be rebuilt later, even after the source file is gone. `--json` output for schedulers, documented exit codes.
@@ -216,7 +216,8 @@ Things the tests didn't catch at first, found by running the demo end to end and
 
 - [x] Phase 1: files in, SQL out: mapping assistant, contracts, diff, guard, audit trail, reports
 - [ ] SFTP and S3 sources, a REST API target (the [LearnHub](https://github.com/MedAmine-SUDO/learnhub-mcp-server) mock LMS first)
-- [ ] Per-field update policies (`always`, `if_empty`, `never`) and lifecycle rules
+- [x] Per-field update policies (`always`, `if_empty`, `never`); updates write only what changed
+- [ ] Lifecycle rules (allowed status transitions per entity)
 - [ ] Hooks for customer-specific logic, without forking the engine
 - [ ] Quarantine and replay from kept raw files
 - [ ] A scheduler and a small UI for many customers at once

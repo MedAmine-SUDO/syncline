@@ -151,7 +151,10 @@ def run(
         spec.load.target, spec.mapping, spec.load.key, extra=deactivate, create=not dry_run
     )
     current = table.read(spec.load.key)
-    diff = compute(checked.valid, current, spec.load.key, deactivate, present=mapped.df)
+    policies = {f: m.update for f, m in spec.mapping.items()}
+    diff = compute(
+        checked.valid, current, spec.load.key, deactivate, present=mapped.df, policies=policies
+    )
     rejected = rejected_details(read, checked)
     counts = diff.counts()
     totals = dict(

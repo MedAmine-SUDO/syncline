@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 (2026-11-24)
+
+Links between flows.
 
 - Lookups (`lookup: {flow, match, take, where}` on a mapping field): take a value from another flow's target
   (a field, a table column or an API JSON key), typed with the field's type. No match or several matches
